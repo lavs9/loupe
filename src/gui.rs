@@ -1,5 +1,3 @@
-//! Search window. The catalog, the disks, and the model stay in the rest of the crate.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -45,7 +43,7 @@ actions!(
         RevealResult,
         ToggleGrid,
         Dismiss,
-        TogglePreview,
+        RefreshPreview,
         CopyResult,
         QuitApp,
         FocusSearch,
@@ -57,11 +55,13 @@ const RESULTS: &str = "PhotoResults";
 const PRODUCT: &str = "Loupe";
 const WORDMARK_FONT: &str = "Baskerville";
 const SEARCH_LIMIT: usize = 48;
-/// Left inset that clears the traffic lights and lines up with the wordmark.
-const TITLE_INSET: f32 = 80.;
+const TRAFFIC_LIGHT_CLEARANCE: f32 = 80.;
 const PAGE_INSET: f32 = 20.;
 const TILE_GAP: f32 = 12.;
 const SHEET_PAD: f32 = 24.;
+const SHEET_MIN_LAYOUT: f32 = 80.;
+const SHEET_FALLBACK_INNER: f32 = 880.;
+const SHEET_MIN_INNER: f32 = 300.;
 
 thread_local! {
     static HOTKEYS: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
@@ -110,7 +110,6 @@ fn note(line: &str) {
     let _ = io::stdout().flush();
 }
 
-/// Darkroom light table. Warm black surface, paper-coloured type, safelight amber for selection.
 fn apply_theme(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
     Theme::update(cx, |theme| {
@@ -207,7 +206,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-o", ToggleGrid, Some(SEARCH)),
         KeyBinding::new("escape", Dismiss, Some(SEARCH)),
         KeyBinding::new("secondary-q", QuitApp, Some(SEARCH)),
-        KeyBinding::new("space", TogglePreview, Some(RESULTS)),
+        KeyBinding::new("space", RefreshPreview, Some(RESULTS)),
         KeyBinding::new("secondary-c", CopyResult, Some(RESULTS)),
         KeyBinding::new("secondary-c", CopyResult, Some(SEARCH)),
         KeyBinding::new("secondary-f", FocusSearch, Some(SEARCH)),
@@ -232,8 +231,6 @@ struct PhotoApp {
     notes: Vec<String>,
     errors: Vec<String>,
     preview: Option<std::path::PathBuf>,
-    /// Photo the side preview belongs to. Cleared with the preview so a new
-    /// selection never keeps the previous picture on screen.
     preview_for: Option<PathBuf>,
     rows: Vec<FolderRow>,
     settings: GuiSettings,
@@ -517,35 +514,16 @@ impl PhotoApp {
         if !self.grid {
             return 1;
         }
-        self.sheet_metrics().0 as isize
+        self.sheet_metrics().cols as isize
     }
 
-    /// Columns and print size for the contact sheet. Falls back to three
-    /// large prints before the sheet has a layout width.
-    fn sheet_metrics(&self) -> (usize, f32, f32) {
-        let width = f32::from(self.hits_scroll.bounds().size.width);
-        let inner = if width < 80. {
-            880.
-        } else {
-            (width - SHEET_PAD).max(300.)
-        };
-        let cols = if inner >= 1100. {
-            4
-        } else if inner >= 620. {
-            3
-        } else {
-            2
-        };
-        let tile_w = ((inner - TILE_GAP * (cols as f32 - 1.)) / cols as f32).floor();
-        let tile_h = (tile_w * 0.72).floor().clamp(176., 320.);
-        (cols, tile_w, tile_h)
+    fn sheet_metrics(&self) -> SheetMetrics {
+        SheetMetrics::from_width(f32::from(self.hits_scroll.bounds().size.width))
     }
 
-    /// One row up or down, using the laid-out tiles. Before the first layout,
-    /// the caller falls back to [`Self::columns`].
     fn row_step(&self, forward: bool) -> RowStep {
         let Some(current) = self.hits_scroll.bounds_for_item(self.selected) else {
-            return RowStep::Unknown;
+            return RowStep::NoLayout;
         };
         let (current_x, current_y) = item_center(current);
         let min_dy = (f32::from(current.size.height) * 0.45).max(8.);
@@ -596,7 +574,7 @@ impl PhotoApp {
             match self.row_step(vertical > 0) {
                 RowStep::Move(index) => index,
                 RowStep::Stay => self.selected,
-                RowStep::Unknown => {
+                RowStep::NoLayout => {
                     let delta = vertical.signum() * self.columns();
                     (self.selected as isize + delta).clamp(0, last) as usize
                 }
@@ -719,7 +697,7 @@ impl PhotoApp {
         cx.notify();
     }
 
-    fn toggle_preview(&mut self, cx: &mut Context<Self>) {
+    fn refresh_preview(&mut self, cx: &mut Context<Self>) {
         if !matches!(self.screen, Screen::Search) {
             return;
         }
@@ -728,7 +706,6 @@ impl PhotoApp {
             cx.notify();
             return;
         }
-        // The side column is the preview. Space asks for it again and does not hide it.
         self.preview_for = None;
         self.queue_side_preview(cx);
         cx.notify();
@@ -970,8 +947,8 @@ impl PhotoApp {
         cx.hide();
     }
 
-    fn on_preview(&mut self, _: &TogglePreview, _: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_preview(cx);
+    fn on_preview(&mut self, _: &RefreshPreview, _: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_preview(cx);
     }
 
     fn on_copy(&mut self, _: &CopyResult, _: &mut Window, cx: &mut Context<Self>) {
@@ -1035,7 +1012,7 @@ impl PhotoApp {
             .border_b_1()
             .border_color(border)
             .bg(cx.theme().background)
-            .pl(px(TITLE_INSET))
+            .pl(px(TRAFFIC_LIGHT_CLEARANCE))
             .pr(px(PAGE_INSET))
             .flex()
             .items_center()
@@ -1279,7 +1256,7 @@ impl PhotoApp {
 
         let search_bar = div()
             .w_full()
-            .pl(px(TITLE_INSET))
+            .pl(px(TRAFFIC_LIGHT_CLEARANCE))
             .pr(px(PAGE_INSET))
             .py_3()
             .border_b_1()
@@ -1298,7 +1275,9 @@ impl PhotoApp {
         } else if !is_empty_query && !has_hits && !self.busy {
             self.no_results_view(cx).into_any_element()
         } else {
-            let (_, tile_w, tile_h) = self.sheet_metrics();
+            let metrics = self.sheet_metrics();
+            let tile_w = metrics.tile_w;
+            let tile_h = metrics.tile_h;
             let mut list = div()
                 .id("hits")
                 .track_focus(&self.results_focus)
@@ -1901,7 +1880,6 @@ impl PhotoApp {
                             .text_color(cx.theme().danger_foreground)
                             .child(sentence)
                     }))
-                    // Local Folders Section
                     .child(
                         div()
                             .flex()
@@ -1925,7 +1903,6 @@ impl PhotoApp {
                             )
                             .child(mac_list),
                     )
-                    // Disks Section
                     .child(
                         div()
                             .flex()
@@ -1956,7 +1933,6 @@ impl PhotoApp {
                             }))
                             .child(disk_list),
                     )
-                    // Settings Section
                     .child(
                         div()
                             .flex()
@@ -1978,7 +1954,6 @@ impl PhotoApp {
                                     .flex()
                                     .gap_4()
                                     .child(
-                                        // Shortcut Box
                                         GroupBox::new()
                                             .id("shortcut-box")
                                             .outline()
@@ -1996,7 +1971,6 @@ impl PhotoApp {
                                             ),
                                     )
                                     .child(
-                                        // Update Box
                                         GroupBox::new()
                                             .id("update-box")
                                             .outline()
@@ -2276,16 +2250,6 @@ fn folder_title(row: &FolderRow) -> String {
         .unwrap_or_else(|| row.label.clone())
 }
 
-#[allow(dead_code)]
-fn folder_status(row: &FolderRow) -> String {
-    match &row.index {
-        IndexState::Ready { photos, .. } => format!("{photos} photos"),
-        IndexState::NoIndex => "Not indexed".into(),
-        IndexState::NotConnected => "Not connected".into(),
-        IndexState::Unreadable(_) => "Can't read the index".into(),
-    }
-}
-
 fn folder_hint(row: &FolderRow) -> String {
     let line = match &row.index {
         IndexState::Ready { .. } if row.kind == DiskKind::External => "Search includes this disk.",
@@ -2325,19 +2289,6 @@ fn file_name(hit: &RankedHit) -> String {
         .unwrap_or_else(|| hit.path.display().to_string())
 }
 
-#[allow(dead_code)]
-fn hit_meta(hit: &RankedHit) -> String {
-    let mut line = hit.label.clone();
-    if let Some(camera) = &hit.camera_model {
-        line.push_str("  ");
-        line.push_str(camera);
-    }
-    if let Some(mm) = hit.focal_length_mm {
-        line.push_str(&format!("  {mm:.0} mm"));
-    }
-    line
-}
-
 fn thumb_box(path: Option<&std::path::Path>, width: f32, height: f32, cx: &App) -> AnyElement {
     let frame = div()
         .w(px(width))
@@ -2363,20 +2314,6 @@ fn thumb_box(path: Option<&std::path::Path>, width: f32, height: f32, cx: &App) 
             .child(IconName::Image)
             .into_any_element()
     }
-}
-
-#[allow(dead_code)]
-fn index_strip(note: SharedString) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            Progress::new("index-progress")
-                .loading(true)
-                .accessibility_label("Indexing photos"),
-        )
-        .child(div().text_sm().child(note))
 }
 
 fn index_sentence(folder: &str, live: &IndexLive) -> String {
@@ -2406,7 +2343,7 @@ fn search_hint(
         .flex()
         .items_center()
         .justify_between()
-        .pl(px(TITLE_INSET))
+        .pl(px(TRAFFIC_LIGHT_CLEARANCE))
         .pr(px(PAGE_INSET))
         .py_1_5()
         .border_t_1()
@@ -2513,10 +2450,40 @@ fn key_chip(action: &dyn Action, context: &str, fallback: &str, window: &Window)
     }
 }
 
+struct SheetMetrics {
+    cols: usize,
+    tile_w: f32,
+    tile_h: f32,
+}
+
+impl SheetMetrics {
+    fn from_width(width: f32) -> Self {
+        let inner = if width < SHEET_MIN_LAYOUT {
+            SHEET_FALLBACK_INNER
+        } else {
+            (width - SHEET_PAD).max(SHEET_MIN_INNER)
+        };
+        let cols = if inner >= 1100. {
+            4
+        } else if inner >= 620. {
+            3
+        } else {
+            2
+        };
+        let tile_w = ((inner - TILE_GAP * (cols as f32 - 1.)) / cols as f32).floor();
+        let tile_h = (tile_w * 0.72).floor().clamp(176., 320.);
+        Self {
+            cols,
+            tile_w,
+            tile_h,
+        }
+    }
+}
+
 enum RowStep {
     Move(usize),
     Stay,
-    Unknown,
+    NoLayout,
 }
 
 fn item_center(bounds: Bounds<Pixels>) -> (f32, f32) {
