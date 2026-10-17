@@ -3,42 +3,49 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Loupe — Describe a photo. Find it on this Mac, and on the disk you plug in.</title>
-  <meta name="description" content="Describe a photo in your own words. Loupe finds it on this Mac and on any HDD or SSD you plug in. The index lives on the drive, next to the pictures.">
+  <title>Loupe — Describe a photo. Find it on the drive.</title>
+  <meta name="description" content="Describe a photo. Loupe finds it on this Mac and on the HDD you plug in. The index lives on the disk, next to the pictures.">
   <meta property="og:title" content="Loupe">
-  <meta property="og:description" content="Describe a photo. The catalog lives on the disk — this Mac, the HDD you plug in, the next Mac.">
+  <meta property="og:description" content="The catalog lives on the disk — this Mac, the HDD you plug in, the next Mac.">
   <meta property="og:image" content="assets/hero.jpg">
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="apple-touch-icon" href="assets/apple-touch.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400;1,9..144,600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="site.css">
 </head>
 <body>
   <header class="bar">
     <a class="wordmark" href="./">Loupe</a>
     <nav>
-      <a href="#how">How it works</a>
+      <a href="#disk">The disk</a>
+      <a href="#models">Models</a>
       <a href="https://github.com/lavs9/loupe/releases">Download</a>
       <a href="https://github.com/lavs9/loupe">GitHub</a>
     </nav>
   </header>
 
-  <img class="hero" src="assets/hero.jpg" alt="A brass loupe on a sheet of photographic prints, lit by a darkroom safelight.">
+  <section class="hero-block">
+    <img class="hero" src="assets/hero.jpg" alt="A brass loupe on a contact sheet of photographic prints.">
+    <div class="hero-copy">
+      <p class="kicker">Free · On this Mac · On the disk you plug in</p>
+      <h1>Describe a photo.<br>Find it on the drive.</h1>
+      <p class="lede">Type what you remember. Matching files come back from this Mac and from any HDD or SSD that already holds an index. The catalog lives next to the pictures, so the disk carries search with it.</p>
+      <p><a class="download" href="https://github.com/lavs9/loupe/releases/latest">Download for Mac</a></p>
+      <p class="note">Version 0.1.0 · unsigned pkg · Apple Silicon, macOS 14+</p>
+    </div>
+  </section>
 
   <main>
-    <p class="kicker">Free · On this Mac · On the disk you plug in</p>
-    <h1>Describe a photo.<br>Find it on the drive.</h1>
-    <p class="lede">Type what you remember. Matching files come back from this Mac and from any HDD or SSD that already holds an index. The catalog lives next to the pictures, so the disk carries search with it.</p>
-
-    <p><a class="download" href="https://github.com/lavs9/loupe/releases/latest">Download for Mac</a></p>
-    <p class="note">Free · Version 0.1.0 · unsigned .pkg · Apple Silicon, macOS 14 or later. Right-click the file, choose Open.</p>
-
-    <p class="pull">Press <kbd>⇧⌘Space</kbd> from any app, type what you remember, and there it is — including photos that still live on a disk in your bag.</p>
-
-    <h2>The disk carries the index.</h2>
-    <p>Other search apps index this Mac. Loupe writes the catalog on the volume next to the photos, in a hidden folder named <code>.photo_index</code>. Unplug the HDD and that catalog leaves with it. Plug the same disk into another Mac running Loupe and search continues. Nothing is copied off the drive. No re-index.</p>
+    <section id="disk" class="split">
+      <img src="assets/disk.jpg" alt="A portable SSD on a walnut desk beside photo prints and a brass loupe.">
+      <div>
+        <h2>The disk carries the index.</h2>
+        <p>Other search apps keep the catalog on the computer. Loupe writes it on the volume, in a hidden folder named <code>.photo_index</code>.</p>
+        <p>Unplug the HDD and that catalog leaves with the photos. Plug the same disk into another Mac running Loupe and search continues. No copy off the drive. No re-index.</p>
+      </div>
+    </section>
 
     <dl class="beats">
       <div>
@@ -47,132 +54,176 @@
       </div>
       <div>
         <dt>The HDD you plug in</dt>
-        <dd>Choose a folder on that volume. Loupe writes the index there. The drive carries the model too.</dd>
+        <dd>Choose a folder on that volume. The drive holds the index and a copy of the model.</dd>
       </div>
       <div>
         <dt>The next Mac</dt>
-        <dd>Same disk, same catalog. Search starts as soon as the volume mounts.</dd>
+        <dd>Same disk, same catalog. Search starts when the volume mounts.</dd>
       </div>
     </dl>
 
-    <h2 id="how">No more digging through folders.</h2>
-    <p>You don’t need the file name. Describe what’s in the frame, or add a camera term you actually shot with.</p>
-    <ul class="examples">
-      <li>
-        <p class="q">blue cap on a dog</p>
-        <p class="meta">Photo · This Mac · Downloads</p>
-        <p>Finds the picture by what’s in it. No tags, no album names.</p>
-      </li>
-      <li>
-        <p class="q">wet street at night 35mm</p>
-        <p class="meta">Photo · BackupHDD · Travel</p>
-        <p>Words rank the frame. <code>35mm</code>, <code>f1.8</code>, <code>iso400</code> filter on EXIF before that rank.</p>
-      </li>
-      <li>
-        <p class="q">kitchen interior</p>
-        <p class="meta">Photo · the disk you just plugged in</p>
-        <p>If that volume already has <code>.photo_index</code>, it joins search. If you unplug it, folders on this Mac still answer.</p>
-      </li>
-    </ul>
-    <p>Version 1 searches images: JPEG, HEIC, PNG, TIFF, WebP, GIF, AVIF, and common RAW. Documents, audio, and video come later.</p>
-
-    <h2>Ready in three steps.</h2>
-    <p>No account. The first search downloads the on-device model (about 865 MB, once).</p>
-    <ol class="steps">
-      <li>
-        <h3>Install it</h3>
-        <p>Download the pkg, right-click, choose Open. Loupe sits in the menu bar. No Dock icon.</p>
-      </li>
-      <li>
-        <h3>Add a folder, or plug in a disk</h3>
-        <p>Settings → Add folder for this Mac. On a plugged-in HDD, Choose folder so a directory is indexed instead of the whole volume. The catalog is written in that folder.</p>
-      </li>
-      <li>
-        <h3>Search</h3>
-        <p>⇧⌘Space, describe a photo. Return opens it. ⌘Return shows it in Finder.</p>
-      </li>
-    </ol>
-    <p class="keys">
-      <span><kbd>↩</kbd> Open</span>
-      <span><kbd>⌘↩</kbd> Finder</span>
-      <span><kbd>⌘C</kbd> Copy</span>
-      <span><kbd>⌘,</kbd> Settings</span>
-      <span><kbd>Esc</kbd> Park</span>
-    </p>
-
-    <h2>Your files stay on the drive they already live on.</h2>
-    <p>Loupe only goes online to download its model once, and to check for an app update if you set a feed. Everything else happens on this Mac and on the volume you chose.</p>
-    <dl class="beats">
-      <div>
-        <dt>Nothing is uploaded</dt>
-        <dd>Photos are read and searched on this machine. They never go to a server.</dd>
+    <section class="story">
+      <h2>One drive, two desks.</h2>
+      <p class="lede-sm">Index on the first Mac. Walk the disk across the room. Search on the second, with no second pass over the photos.</p>
+      <div class="frames">
+        <figure>
+          <img src="assets/disk.jpg" alt="Portable disk beside prints on the first desk.">
+          <figcaption>Index on the disk</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/hero.jpg" alt="Contact sheet and loupe.">
+          <figcaption>The catalog travels</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/disk-other-mac.jpg" alt="The same portable disk plugged into a second Mac.">
+          <figcaption>Plug in. Search.</figcaption>
+        </figure>
       </div>
-      <div>
-        <dt>The HDD keeps its catalog</dt>
-        <dd>Unplug it and the index leaves with the pictures. This Mac’s folders keep searching.</dd>
-      </div>
-      <div>
-        <dt>Only what you choose</dt>
-        <dd>Loupe looks in folders you add. It does not move, rename, or delete photos. Finder hides <code>.photo_index</code>.</dd>
-      </div>
-      <div>
-        <dt>No account</dt>
-        <dd>Nothing to sign up for. Quit is on the menu-bar icon.</dd>
-      </div>
-    </dl>
+    </section>
 
-    <h2>Questions?</h2>
-    <div class="faq">
-      <details>
-        <summary>How is this different from search that only looks at this Mac?</summary>
-        <p>Those apps keep the index on the computer. Loupe writes the index on the disk next to the photos. Plug that HDD into another Mac running Loupe and the same catalog is searched, with no re-index. That is the point.</p>
-      </details>
-      <details>
-        <summary>What happens when I unplug the drive?</summary>
-        <p>That disk is skipped. Search keeps running on every folder that is still here. Plug it back in and it joins again.</p>
-      </details>
-      <details>
-        <summary>How is this different from Spotlight?</summary>
-        <p>Spotlight finds files by name and the words in them. Loupe finds a photo by what’s in the frame, and it searches a plugged-in disk that already has an index.</p>
-      </details>
-      <details>
-        <summary>Is Loupe free?</summary>
-        <p>Yes. The source is on GitHub. No subscription, no account, no ads.</p>
-      </details>
-      <details>
-        <summary>Which Macs does it work on?</summary>
-        <p>Apple Silicon (M1 or newer), macOS 14 Sonoma or later. Not Intel. Not Windows or Linux in this version.</p>
-      </details>
-      <details>
-        <summary>Do my photos get uploaded?</summary>
-        <p>No. Search and index run on this Mac. The only download is the AI model the first time, and an optional update check that sends nothing about photos.</p>
-      </details>
-      <details>
-        <summary>Why does the first search download 865 MB?</summary>
-        <p>That’s EmbeddingGemma 2, the on-device model that understands photos and the words you type. It downloads once into Application Support. A copy is also written onto each disk you index, so the drive carries the model.</p>
-      </details>
-      <details>
-        <summary>macOS says the installer can’t be opened.</summary>
-        <p>This first pkg is unsigned. Right-click the file, choose Open. A signed, notarized installer is next.</p>
-      </details>
-      <details>
-        <summary>Can it search the Photos app library?</summary>
-        <p>Not yet. Export from Photos into a folder, or wait for PhotoKit. The Photos library package is skipped on purpose.</p>
-      </details>
-      <details>
-        <summary>How do I uninstall it?</summary>
-        <p>Quit Loupe from the menu-bar icon, drag <code>Loupe.app</code> to the Trash, and delete <code>~/Library/Application Support/loupe</code> if you want the model gone too. Catalogs on your disks stay in <code>.photo_index</code> until you remove them.</p>
-      </details>
-    </div>
+    <section>
+      <h2>No more digging through folders.</h2>
+      <p>You don’t need the file name. Describe what’s in the frame. Camera terms you actually shot with still filter: <code>35mm</code>, <code>f1.8</code>, <code>iso400</code>.</p>
+      <ul class="examples">
+        <li>
+          <p class="q">blue cap on a dog</p>
+          <p class="meta">This Mac · Downloads</p>
+          <p>Finds the picture by what’s in it.</p>
+        </li>
+        <li>
+          <p class="q">wet street at night 35mm</p>
+          <p class="meta">BackupHDD · Travel</p>
+          <p>Words rank the frame. EXIF cuts the rest.</p>
+        </li>
+        <li>
+          <p class="q">kitchen interior</p>
+          <p class="meta">The disk you just plugged in</p>
+          <p>If that volume has an index, it joins. Unplug it and folders on this Mac still answer.</p>
+        </li>
+      </ul>
+      <p class="note">Version 1 is images: JPEG, HEIC, PNG, TIFF, WebP, GIF, AVIF, RAW. Documents and video come later.</p>
+    </section>
 
-    <h2>Stop digging. Hold a loupe to the sheet.</h2>
-    <p>Free, on-device, and the HDD comes with it.</p>
-    <p><a class="download" href="https://github.com/lavs9/loupe/releases/latest">Download for Mac</a></p>
-    <p class="note">Version 0.1.0 · unsigned pkg · Apple Silicon, macOS 14 or later</p>
+    <section>
+      <h2>Ready in three steps.</h2>
+      <ol class="steps">
+        <li>
+          <h3>Install it</h3>
+          <p>Download the pkg, right-click, Open. Loupe sits in the menu bar.</p>
+        </li>
+        <li>
+          <h3>Add a folder, or plug in a disk</h3>
+          <p>Settings → Add folder on this Mac. On an HDD, Choose folder so the catalog lands next to those photos.</p>
+        </li>
+        <li>
+          <h3>Search</h3>
+          <p>⇧⌘Space. Return opens. ⌘Return shows Finder.</p>
+        </li>
+      </ol>
+      <p class="keys">
+        <span><kbd>⇧⌘Space</kbd> Open</span>
+        <span><kbd>↩</kbd> File</span>
+        <span><kbd>⌘↩</kbd> Finder</span>
+        <span><kbd>⌘,</kbd> Settings</span>
+        <span><kbd>Esc</kbd> Park</span>
+      </p>
+    </section>
+
+    <section id="models">
+      <h2>A model that fits the Mac you have.</h2>
+      <p>Loupe is not a chat app. It runs a small multimodal embedder so a sentence and a photograph share a space. The default is sized for a <strong>16 GB</strong> machine, so an HDD indexed there still opens on a 32 GB Mac.</p>
+      <table class="ram">
+        <thead>
+          <tr>
+            <th>Memory</th>
+            <th>Use this</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="pick">
+            <td>16 GB</td>
+            <td>EmbeddingGemma 2 Q8</td>
+            <td>What ships. ~865 MB weights, about 2 GB unified while indexing.</td>
+          </tr>
+          <tr>
+            <td>24 GB</td>
+            <td>EmbeddingGemma 2 Q8</td>
+            <td>Same model. Headroom for a large library. Disks stay portable.</td>
+          </tr>
+          <tr>
+            <td>32 GB</td>
+            <td>EmbeddingGemma 2 Q8, still</td>
+            <td>Extra RAM helps decode, not a second catalog. A larger vision model would re-index that disk.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Next on the list, as opt-in per folder: <strong>Qwen3-VL-Embedding 2B</strong> (stronger pictures, wants 32 GB) and <strong>jina-embeddings-v5-omni</strong> when we search video and documents. Chat models are the wrong tool. <a href="MODELS.md">Full notes</a>.</p>
+    </section>
+
+    <section>
+      <h2>Your files stay on the drive they already live on.</h2>
+      <dl class="beats four">
+        <div>
+          <dt>Nothing is uploaded</dt>
+          <dd>Photos are read on this machine. They never go to a server.</dd>
+        </div>
+        <div>
+          <dt>The HDD keeps its catalog</dt>
+          <dd>Unplug it and the index leaves with the pictures.</dd>
+        </div>
+        <div>
+          <dt>Only what you choose</dt>
+          <dd>Loupe does not move, rename, or delete photos.</dd>
+        </div>
+        <div>
+          <dt>No account</dt>
+          <dd>Quit is on the menu-bar icon.</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Questions</h2>
+      <div class="faq">
+        <details>
+          <summary>How is this different from search that only looks at this Mac?</summary>
+          <p>Those apps keep the index on the computer. Loupe writes it on the disk next to the photos. Plug that HDD into another Mac running Loupe and the same catalog is searched, with no re-index.</p>
+        </details>
+        <details>
+          <summary>What happens when I unplug the drive?</summary>
+          <p>That disk is skipped. Search keeps running on every folder that is still here.</p>
+        </details>
+        <details>
+          <summary>Why not a bigger model on 32 GB?</summary>
+          <p>You can, later, as an opt-in. The default stays EmbeddingGemma 2 so a disk from a 16 GB Mac still searches on a 32 GB Mac. A different model means a re-index of that folder.</p>
+        </details>
+        <details>
+          <summary>Do my photos get uploaded?</summary>
+          <p>No. The only download is the model the first time (~865 MB), and an optional update check that sends nothing about photos.</p>
+        </details>
+        <details>
+          <summary>macOS says the installer can’t be opened.</summary>
+          <p>This first pkg is unsigned. Right-click the file, choose Open.</p>
+        </details>
+        <details>
+          <summary>Can it search the Photos app library?</summary>
+          <p>Not yet. Export to a folder, or wait for PhotoKit.</p>
+        </details>
+      </div>
+    </section>
+
+    <section class="close">
+      <h2>Stop digging. Hold a loupe to the sheet.</h2>
+      <p><a class="download" href="https://github.com/lavs9/loupe/releases/latest">Download for Mac</a></p>
+      <p class="note">Version 0.1.0 · Apple Silicon · the index lives with the photos</p>
+    </section>
   </main>
 
   <footer>
-    Loupe · the index lives with the photos
+    <a href="./">Loupe</a>
+    <a href="MODELS.md">Models</a>
+    <a href="https://github.com/lavs9/loupe">Source</a>
   </footer>
 </body>
 </html>
