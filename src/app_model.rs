@@ -61,20 +61,26 @@ pub struct Chord {
     pub key: ChordKey,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChordKey {
     Space,
     Letter(char),
+    Digit(char),
     Function(u8),
+    Other(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuiSettings {
     pub shortcut: String,
+    pub theme: String,
     pub check_updates: bool,
     pub update_feed: String,
     pub last_check_unix: u64,
 }
+
+pub const THEME_DARKROOM: &str = "darkroom";
+pub const THEME_PAPER: &str = "paper";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateReport {
@@ -107,6 +113,7 @@ pub fn settings_path() -> PathBuf {
 pub fn load_settings() -> GuiSettings {
     let mut settings = GuiSettings {
         shortcut: DEFAULT_SHORTCUT.to_string(),
+        theme: THEME_DARKROOM.to_string(),
         check_updates: true,
         update_feed: String::new(),
         last_check_unix: 0,
@@ -123,6 +130,12 @@ pub fn load_settings() -> GuiSettings {
                 let value = value.trim();
                 if parse_chord(value).is_ok() {
                     settings.shortcut = value.to_string();
+                }
+            }
+            "theme" => {
+                let value = value.trim();
+                if value == THEME_PAPER || value == THEME_DARKROOM {
+                    settings.theme = value.to_string();
                 }
             }
             "check_updates" => settings.check_updates = value.trim() != "false",
@@ -142,8 +155,9 @@ pub fn save_settings(settings: &GuiSettings) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let body = format!(
-        "shortcut={}\ncheck_updates={}\nupdate_feed={}\nlast_check_unix={}\n",
+        "shortcut={}\ntheme={}\ncheck_updates={}\nupdate_feed={}\nlast_check_unix={}\n",
         settings.shortcut,
+        settings.theme,
         if settings.check_updates { "true" } else { "false" },
         settings.update_feed,
         settings.last_check_unix,
@@ -176,7 +190,7 @@ pub fn update_is_due(settings: &GuiSettings) -> bool {
         && unix_now().saturating_sub(settings.last_check_unix) >= DAY_SECS
 }
 
-/// Modifiers, then one key: `shift+super+space`, `ctrl+alt+super+f19`, `super+k`.
+/// Modifiers, then one key: `shift+super+space`, `ctrl+alt+super+f19`, `super+comma`.
 pub fn parse_chord(text: &str) -> Result<Chord> {
     let text = text.trim().to_ascii_lowercase();
     if text.is_empty() {
@@ -231,8 +245,47 @@ fn parse_key(text: &str) -> Result<ChordKey> {
         if ch.is_ascii_lowercase() {
             return Ok(ChordKey::Letter(ch));
         }
+        if ch.is_ascii_digit() {
+            return Ok(ChordKey::Digit(ch));
+        }
+        let named = match ch {
+            '-' => "minus",
+            '=' => "equal",
+            ',' => "comma",
+            '.' => "period",
+            '/' => "slash",
+            ';' => "semicolon",
+            '\'' => "quote",
+            '\\' => "backslash",
+            '`' => "backquote",
+            '[' => "bracketleft",
+            ']' => "bracketright",
+            _ => "",
+        };
+        if !named.is_empty() {
+            return Ok(ChordKey::Other(named.into()));
+        }
     }
-    bail!("The key must be space, a letter, or f1 through f24.");
+    let canonical = match text {
+        "return" => "enter",
+        "esc" => "escape",
+        "del" => "delete",
+        "arrowup" => "up",
+        "arrowdown" => "down",
+        "arrowleft" => "left",
+        "arrowright" => "right",
+        "pgup" => "pageup",
+        "pgdn" | "pagedown" => "pagedown",
+        other => other,
+    };
+    if canonical
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        && !canonical.is_empty()
+    {
+        return Ok(ChordKey::Other(canonical.to_string()));
+    }
+    Ok(ChordKey::Other(text.to_string()))
 }
 
 pub fn format_chord(chord: &Chord) -> String {
@@ -249,10 +302,12 @@ pub fn format_chord(chord: &Chord) -> String {
     if chord.super_key {
         parts.push("super");
     }
-    parts.push(match chord.key {
+    parts.push(match &chord.key {
         ChordKey::Space => "space",
         ChordKey::Letter(ch) => return format!("{}+{ch}", parts.join("+")),
+        ChordKey::Digit(ch) => return format!("{}+{ch}", parts.join("+")),
         ChordKey::Function(n) => return format!("{}+f{n}", parts.join("+")),
+        ChordKey::Other(name) => return format!("{}+{name}", parts.join("+")),
     });
     parts.join("+")
 }
@@ -271,10 +326,39 @@ pub fn display_chord(chord: &Chord) -> String {
     if chord.super_key {
         text.push('⌘');
     }
-    match chord.key {
+    match &chord.key {
         ChordKey::Space => text.push_str("Space"),
         ChordKey::Letter(ch) => text.push(ch.to_ascii_uppercase()),
+        ChordKey::Digit(ch) => text.push(*ch),
         ChordKey::Function(n) => text.push_str(&format!("F{n}")),
+        ChordKey::Other(name) => {
+            let pretty = match name.as_str() {
+                "enter" => "Return",
+                "escape" => "Esc",
+                "comma" => ",",
+                "period" => ".",
+                "minus" => "-",
+                "equal" => "=",
+                "slash" => "/",
+                "up" => "↑",
+                "down" => "↓",
+                "left" => "←",
+                "right" => "→",
+                other => other,
+            };
+            if pretty.len() == 1 {
+                text.push_str(&pretty.to_ascii_uppercase());
+            } else if pretty.chars().next().is_some_and(|ch| ch.is_ascii_uppercase() || !ch.is_ascii())
+            {
+                text.push_str(pretty);
+            } else {
+                let mut chars = pretty.chars();
+                if let Some(first) = chars.next() {
+                    text.extend(first.to_uppercase());
+                    text.push_str(chars.as_str());
+                }
+            }
+        }
     }
     text
 }
