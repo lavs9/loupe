@@ -4,7 +4,7 @@ Search photos on this Mac and on disks you plug in. The index lives next to the 
 
 ```
 cargo build --features gui
-./target/debug/photo-engine gui
+./target/debug/loupe gui
 ```
 
-The command is still `photo-engine`. The product is Loupe. See [SPEC.md](SPEC.md).
+See [SPEC.md](SPEC.md).

@@ -111,7 +111,7 @@ fn transcode_still(path: &Path) -> Option<Vec<u8>> {
         .duration_since(UNIX_EPOCH)
         .map(|time| time.as_nanos())
         .unwrap_or(0);
-    let out = std::env::temp_dir().join(format!("photo-engine-still-{stamp}.jpg"));
+    let out = std::env::temp_dir().join(format!("loupe-still-{stamp}.jpg"));
     let converted = Command::new("/usr/bin/sips")
         .args(["-s", "format", "jpeg", "-s", "formatOptions", "90"])
         .arg(path)

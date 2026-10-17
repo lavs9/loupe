@@ -12,16 +12,16 @@ cd "$(dirname "$0")/.."
 # Own target dir, so this check does not replace the window binary in target/debug.
 export CARGO_TARGET_DIR="$PWD/target/window-check"
 cargo build -q --features gui
-BIN="$CARGO_TARGET_DIR/debug/photo-engine"
+BIN="$CARGO_TARGET_DIR/debug/loupe"
 
-ROOT=$(mktemp -d /tmp/photo-engine-gui.XXXXXX)
-export PHOTO_ENGINE_STATE_DIR="$ROOT/state"
-export PHOTO_ENGINE_VOLUMES="$ROOT/volumes"
-export PHOTO_ENGINE_MODEL_DIR="$PWD/target/gemma-models"
-export PHOTO_ENGINE_RUNTIME_DIR="$PWD/target/gemma-runtime"
+ROOT=$(mktemp -d /tmp/loupe-gui.XXXXXX)
+export LOUPE_STATE_DIR="$ROOT/state"
+export LOUPE_VOLUMES="$ROOT/volumes"
+export LOUPE_MODEL_DIR="$PWD/target/gemma-models"
+export LOUPE_RUNTIME_DIR="$PWD/target/gemma-runtime"
 # A dead embedder URL. Opening the window must not download weights or start llama.cpp.
-export PHOTO_ENGINE_GEMMA_URL="http://127.0.0.1:9"
-mkdir -p "$ROOT/state" "$ROOT/volumes/EmptyDisk" "$PHOTO_ENGINE_MODEL_DIR" "$PHOTO_ENGINE_RUNTIME_DIR"
+export LOUPE_GEMMA_URL="http://127.0.0.1:9"
+mkdir -p "$ROOT/state" "$ROOT/volumes/EmptyDisk" "$LOUPE_MODEL_DIR" "$LOUPE_RUNTIME_DIR"
 
 # Not the default shortcut, so this check does not take ⇧⌘Space.
 cat > "$ROOT/state/gui.toml" <<'EOF'
@@ -59,11 +59,11 @@ trap cleanup EXIT
 "$BIN" gui --self-check >"$ROOT/self-check.txt"
 grep -q $'folder\tdisk\tno-index\tEmptyDisk\t' "$ROOT/self-check.txt"
 
-pidfile="$PHOTO_ENGINE_RUNTIME_DIR/llama-server.pid"
+pidfile="$LOUPE_RUNTIME_DIR/llama-server.pid"
 if [[ -f "$pidfile" ]]; then
   before_pid=$(cat "$pidfile")
 fi
-before=$(find "$PHOTO_ENGINE_MODEL_DIR" -type f -exec stat -f '%i %z' {} \; | sort)
+before=$(find "$LOUPE_MODEL_DIR" -type f -exec stat -f '%i %z' {} \; | sort)
 "$BIN" gui >"$ROOT/gui.out" 2>"$ROOT/gui.err" &
 gui_pid=$!
 
@@ -92,7 +92,7 @@ kill -0 "$gui_pid" 2>/dev/null || {
   echo "the window closed itself" >&2
   exit 1
 }
-after=$(find "$PHOTO_ENGINE_MODEL_DIR" -type f -exec stat -f '%i %z' {} \; | sort)
+after=$(find "$LOUPE_MODEL_DIR" -type f -exec stat -f '%i %z' {} \; | sort)
 test "$before" = "$after" || {
   echo "opening the window changed the model files" >&2
   exit 1

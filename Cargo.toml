@@ -1,8 +1,8 @@
 [package]
-name = "photo-engine"
+name = "loupe"
 version = "0.1.0"
 edition = "2021"
-description = "Loupe: index photos onto a disk, then search this Mac and any connected disk that already holds that index"
+description = "Search photos on this Mac and on disks you plug in. The index lives next to the photos."
 
 [features]
 # The window pulls in GPUI. The command-line build stays the default.

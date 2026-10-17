@@ -24,7 +24,7 @@ const TEXT_URL: &str = "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/re
 const VISION_URL: &str = "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/mmproj-embeddinggemma-2-Q8_0.gguf";
 
 /// One EmbeddingGemma 2 process. A command starts it on the first embed and
-/// stops it on exit, unless `PHOTO_ENGINE_GEMMA_URL` already points at one.
+/// stops it on exit, unless `LOUPE_GEMMA_URL` already points at one.
 pub struct GemmaEmbedder {
     inner: Mutex<Server>,
 }
@@ -56,13 +56,13 @@ impl GemmaEmbedder {
     }
 
     fn ensure(&self, port: Option<u16>) -> Result<String> {
-        if let Ok(url) = std::env::var("PHOTO_ENGINE_GEMMA_URL") {
+        if let Ok(url) = sources::env_var("LOUPE_GEMMA_URL", "PHOTO_ENGINE_GEMMA_URL") {
             let url = url.trim().trim_end_matches('/').to_string();
             if health(&url) {
                 return Ok(url);
             }
             anyhow::bail!(
-                "{url} is not answering. Start `photo-engine serve`, or unset PHOTO_ENGINE_GEMMA_URL."
+                "{url} is not answering. Start `loupe serve`, or unset LOUPE_GEMMA_URL."
             );
         }
         let mut guard = self.lock();
@@ -194,14 +194,14 @@ pub fn publish_models(drive_root: &Path) -> Result<()> {
 }
 
 fn model_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("PHOTO_ENGINE_MODEL_DIR") {
+    if let Some(dir) = sources::env_os("LOUPE_MODEL_DIR", "PHOTO_ENGINE_MODEL_DIR") {
         return PathBuf::from(dir);
     }
     sources::state_dir().join("models")
 }
 
 fn runtime_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("PHOTO_ENGINE_RUNTIME_DIR") {
+    if let Some(dir) = sources::env_os("LOUPE_RUNTIME_DIR", "PHOTO_ENGINE_RUNTIME_DIR") {
         return PathBuf::from(dir);
     }
     sources::state_dir().join("runtime")
@@ -341,7 +341,7 @@ fn download_file(url: &str, dest: &Path, expected: u64) -> Result<()> {
     );
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(180))
-        .user_agent("photo-engine")
+        .user_agent("loupe")
         .build();
     let response = agent
         .get(url)

@@ -1,6 +1,6 @@
 # Loupe
 
-Loupe is the product. The crate and the command are still `photo-engine`.
+Loupe is the product. The crate and the command are `loupe`.
 
 A photographer holds a loupe to a contact sheet. You type what the photograph showed. Matching files come back from this Mac and from any disk you plug in that already holds an index. The catalog lives next to the photos, in `.photo_index/`, so another machine that runs Loupe searches the same disk without copying anything off it.
 
@@ -24,7 +24,7 @@ The interaction is Loupe's own. You point it at a folder on this Mac, or at a di
 
 The model is EmbeddingGemma 2 (Apache 2.0). This crate runs the ggml-org 8-bit text and vision GGUFs through llama.cpp b11642. A photo and the words in a query land in one space. The model emits 768 values. Matryoshka truncation keeps the first 256, and those are normalized again before they are stored. Audio is not loaded. Text queries are prefixed with `task: search result | query:`. Images are sent with no prefix. The weights are copied onto the disk at `.photo_index/models/` so the drive carries the model. A second Mac downloads llama.cpp for itself and reads the weights from the disk.
 
-`photo-engine index <root>` writes `<root>/.photo_index/`:
+`loupe index <root>` writes `<root>/.photo_index/`:
 
 * `config.toml` names the model (`embeddinggemma-2-q8-256`, 256 dimensions).
 * `db/catalog.db` holds the BLAKE3 identity, the path, EXIF, an FTS5 keyword index, and a sqlite-vec row.
@@ -37,29 +37,29 @@ When the chosen folder contains a directory named `Photos`, only that directory 
 
 File and folder names, and the camera fields, are matched by FTS5 and merged with the vector rank. Camera terms in the query (`35mm`, `f1.8`, `iso400`, a year) filter before ranking.
 
-`photo-engine search` reads both sides, and it does not write a catalog:
+`loupe search` reads both sides, and it does not write a catalog:
 
-* **This Mac.** The folder list shows every path remembered in `~/Library/Application Support/photo-engine/sources.txt`, plus `~/Pictures` when that folder exists. Index or Add folder writes the path into that file. Desktop, Downloads, and the rest of the Mac stay out until you add them. `~/Pictures` is searched only after it has an index.
+* **This Mac.** The folder list shows every path remembered in `~/Library/Application Support/loupe/sources.txt`, plus `~/Pictures` when that folder exists. Index or Add folder writes the path into that file. Desktop, Downloads, and the rest of the Mac stay out until you add them. `~/Pictures` is searched only after it has an index. A previous `~/Library/Application Support/photo-engine` folder is renamed to `loupe` the first time Loupe starts.
 * **Connected external disks.** macOS mounts a plugged-in HDD or SSD at `/Volumes/<name>`. `diskutil` must report `Device Location: External`. The internal boot volume and Recovery are not listed. `Solid State: Yes` is an SSD, and `No` is a hard disk. A volume whose root contains `.photo_index` is searched. The index stays on that disk, so another machine running this tool sees it when the disk is mounted. Listing a disk does not create an index.
 
-`photo-engine serve` loads the model once and prints `ready <url>`. Set `PHOTO_ENGINE_GEMMA_URL` to that URL and later commands reuse it. Without that variable, each command starts the model and stops it on exit.
+`loupe serve` loads the model once and prints `ready <url>`. Set `LOUPE_GEMMA_URL` to that URL and later commands reuse it. `PHOTO_ENGINE_GEMMA_URL` is still read. Without that variable, each command starts the model and stops it on exit.
 
-`photo-engine status` prints the photo count for each connected index. `photo-engine mount` serves `Search/<query>/` over NFSv3. Each result is a relative symlink back to the photo.
+`loupe status` prints the photo count for each connected index. `loupe mount` serves `Search/<query>/` over NFSv3. Each result is a relative symlink back to the photo.
 
 The Mac Photos library is a later source. It is not read yet.
 
 ## 4. Window
 
-The window is GPUI through the published `gpui-kit` crate, opened with `photo-engine gui`. The command-line build does not include it. `cargo build --features gui` produces the binary that does. Search uses the kit toolbar, key chips, progress bar, and description list, along with its button, input, and checkbox. Version 1 searches images only. Documents, audio, and video are a later version, after image search stays right.
+The window is GPUI through the published `gpui-kit` crate, opened with `loupe gui`. The command-line build does not include it. `cargo build --features gui` produces the binary that does. Search uses the kit toolbar, key chips, progress bar, and description list, along with its button, input, and checkbox. Version 1 searches images only. Documents, audio, and video are a later version, after image search stays right.
 
-`photo-engine gui --self-check` prints the folder list, the default shortcut, and the update comparison, then exits. It does not open a window and it does not need the `gui` feature.
+`loupe gui --self-check` prints the folder list, the default shortcut, and the update comparison, then exits. It does not open a window and it does not need the `gui` feature.
 
 The window has two screens.
 
 * **Search.** A query, then the photos from every connected index, with a preview column on the right that follows the selection. The contact sheet reads each photo at display size, so an old 32×32 cache is not stretched across the tile. The side preview is a larger copy of the same photo, and it stays visible while you type. Left and right move one photo. Up and down move one row, and the sheet scrolls to keep that photo in view. Arrow keys do this while the query is focused. Return opens the file. Command-Return reveals it in Finder. Command-C copies the file once a photo is focused. Command-O switches between the list and the grid. Escape hides the app. The shortcut brings it back. While an index is running, a bar stays on the search screen and the folder screen, with the current file and how many photos are new or already indexed. Search does not clear that bar.
-* **Disks.** Two groups: folders on this Mac, and plugged-in disks. Each row shows the place, how many photos are indexed, and whether search includes it. Remembered folders, Pictures when that folder exists, and every mounted volume are listed. A mounted HDD or SSD is listed even when it has no index. **Index** or **Update** runs the same incremental index as `photo-engine index`, and writes `.photo_index` on that disk. **Add folder** remembers a folder and indexes it. **Forget** removes a folder from the remembered list and leaves the index on disk. Search never creates an index. A disk that is unplugged is marked not connected and is not searched. If macOS blocks the folder itself, the window says so in a sentence. It does not print the raw operating-system error.
+* **Disks.** Two groups: folders on this Mac, and plugged-in disks. Each row shows the place, how many photos are indexed, and whether search includes it. Remembered folders, Pictures when that folder exists, and every mounted volume are listed. A mounted HDD or SSD is listed even when it has no index. **Index** or **Update** runs the same incremental index as `loupe index`, and writes `.photo_index` on that disk. **Add folder** remembers a folder and indexes it. **Forget** removes a folder from the remembered list and leaves the index on disk. Search never creates an index. A disk that is unplugged is marked not connected and is not searched. If macOS blocks the folder itself, the window says so in a sentence. It does not print the raw operating-system error.
 
-The global shortcut defaults to ⇧⌘Space (`shift+super+space`). It is stored in `gui.toml` next to `sources.txt`. The chord needs a modifier, then space, a letter, or f1 through f24. Changing it replaces the registered shortcut. Closing the window hides Loupe, and the shortcut opens it again. Quit, on the Folders screen or with Command-Q, exits.
+The global shortcut defaults to ⇧⌘Space (`shift+super+space`). It is stored in `gui.toml` next to `sources.txt`. The chord needs a modifier, then space, a letter, or f1 through f24. Changing it replaces the registered shortcut. Closing the window hides Loupe, and the shortcut opens it again. Quit, on the Disks screen or with Command-Q, exits.
 
 The window is a darkroom light table. Photos sit on a warm-black surface. Selection is a safelight amber ring. The wordmark is Loupe. The two screens are Search and Disks.
 

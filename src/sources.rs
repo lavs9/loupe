@@ -42,26 +42,42 @@ pub struct MountedDisk {
     pub medium: DiskMedium,
 }
 
+/// Read `name`, then the previous `PHOTO_ENGINE_*` name so old shells still work.
+pub fn env_os(name: &str, legacy: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(name).or_else(|| std::env::var_os(legacy))
+}
+
+pub fn env_var(name: &str, legacy: &str) -> Result<String, std::env::VarError> {
+    std::env::var(name).or_else(|_| std::env::var(legacy))
+}
+
 /// Where this Mac remembers internal folders it has indexed.
 ///
-/// `PHOTO_ENGINE_STATE_DIR` overrides the directory so a check can avoid the real
-/// Application Support folder.
+/// `LOUPE_STATE_DIR` overrides the directory so a check can avoid the real
+/// Application Support folder. `PHOTO_ENGINE_STATE_DIR` is still read.
 pub fn state_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("PHOTO_ENGINE_STATE_DIR") {
+    if let Some(dir) = env_os("LOUPE_STATE_DIR", "PHOTO_ENGINE_STATE_DIR") {
         return PathBuf::from(dir);
     }
-    home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Library/Application Support/photo-engine")
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let loupe = home.join("Library/Application Support/loupe");
+    let legacy = home.join("Library/Application Support/photo-engine");
+    if !loupe.exists() && legacy.exists() {
+        if fs::rename(&legacy, &loupe).is_ok() {
+            return loupe;
+        }
+        return legacy;
+    }
+    loupe
 }
 
 pub fn sources_file() -> PathBuf {
     state_dir().join("sources.txt")
 }
 
-/// Root scanned for disks that were plugged in. `PHOTO_ENGINE_VOLUMES` overrides `/Volumes`.
+/// Root scanned for disks that were plugged in. `LOUPE_VOLUMES` overrides `/Volumes`.
 pub fn volumes_root() -> PathBuf {
-    let path = std::env::var_os("PHOTO_ENGINE_VOLUMES")
+    let path = env_os("LOUPE_VOLUMES", "PHOTO_ENGINE_VOLUMES")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/Volumes"));
     fs::canonicalize(&path).unwrap_or(path)
@@ -211,7 +227,7 @@ fn default_local_dirs() -> Vec<PathBuf> {
 ///
 /// On this Mac that is each directory in `/Volumes` that `diskutil` calls
 /// external. The boot volume (`Macintosh HD`) and Recovery stay out. A check
-/// sets `PHOTO_ENGINE_VOLUMES` to a plain directory, and every folder there is
+/// sets `LOUPE_VOLUMES` to a plain directory, and every folder there is
 /// a disk.
 pub fn mounted_disks() -> Vec<MountedDisk> {
     let root = volumes_root();
@@ -232,7 +248,7 @@ pub fn mounted_disks() -> Vec<MountedDisk> {
         paths.push(path);
     }
     paths.sort();
-    let synthetic = std::env::var_os("PHOTO_ENGINE_VOLUMES").is_some();
+    let synthetic = env_os("LOUPE_VOLUMES", "PHOTO_ENGINE_VOLUMES").is_some();
     let mut disks = Vec::new();
     for path in paths {
         if synthetic {

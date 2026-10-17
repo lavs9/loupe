@@ -28,8 +28,8 @@ use crate::sources::find_catalog;
 use crate::vfs::PhotoSearchVfs;
 
 #[derive(Parser)]
-#[command(name = "photo-engine")]
-#[command(about = "Index and search photos on this Mac and on disks you plug in")]
+#[command(name = "loupe")]
+#[command(about = "Search photos on this Mac and on disks you plug in")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -82,7 +82,7 @@ enum Commands {
         #[arg(short, long, default_value_t = 11111)]
         port: u16,
     },
-    /// Open the search window. `photo-engine gui --self-check` prints the folder list and exits.
+    /// Open the search window. `loupe gui --self-check` prints the folder list and exits.
     Gui {
         /// Print folders, the shortcut, and the update check, then exit. No window.
         #[arg(long)]
@@ -126,7 +126,7 @@ fn open_gui() -> Result<()> {
     #[cfg(not(feature = "gui"))]
     {
         anyhow::bail!(
-            "This build has no window. Rebuild with `cargo build --features gui`, then run `photo-engine gui`."
+            "This build has no window. Rebuild with `cargo build --features gui`, then run `loupe gui`."
         );
     }
 }

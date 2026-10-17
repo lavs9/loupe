@@ -18,21 +18,21 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ROOT=$(mktemp -d /tmp/photo-engine-e2e.XXXXXX)
-export PHOTO_ENGINE_STATE_DIR="$ROOT/state"
-export PHOTO_ENGINE_VOLUMES="$ROOT/volumes"
-export PHOTO_ENGINE_MODEL_DIR="$PWD/target/gemma-models"
-export PHOTO_ENGINE_RUNTIME_DIR="$PWD/target/gemma-runtime"
+ROOT=$(mktemp -d /tmp/loupe-e2e.XXXXXX)
+export LOUPE_STATE_DIR="$ROOT/state"
+export LOUPE_VOLUMES="$ROOT/volumes"
+export LOUPE_MODEL_DIR="$PWD/target/gemma-models"
+export LOUPE_RUNTIME_DIR="$PWD/target/gemma-runtime"
 mkdir -p "$ROOT/local/Photos" "$ROOT/volumes/BackupHDD/Photos" "$ROOT/volumes/EmptyDisk" "$ROOT/state" "$ROOT/empty" \
-  "$PHOTO_ENGINE_MODEL_DIR" "$PHOTO_ENGINE_RUNTIME_DIR"
+  "$LOUPE_MODEL_DIR" "$LOUPE_RUNTIME_DIR"
 
 cleanup() {
   if [[ -n "${serve_pid:-}" ]]; then
     kill "$serve_pid" 2>/dev/null || true
     wait "$serve_pid" 2>/dev/null || true
   fi
-  if [[ -f "$PHOTO_ENGINE_RUNTIME_DIR/llama-server.pid" ]]; then
-    kill "$(cat "$PHOTO_ENGINE_RUNTIME_DIR/llama-server.pid")" 2>/dev/null || true
+  if [[ -f "$LOUPE_RUNTIME_DIR/llama-server.pid" ]]; then
+    kill "$(cat "$LOUPE_RUNTIME_DIR/llama-server.pid")" 2>/dev/null || true
   fi
   if [[ -f "$ROOT/report.txt" ]]; then
     mkdir -p target
@@ -42,11 +42,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Own target dir. A CLI build and a window build share target/debug/photo-engine,
+# Own target dir. A CLI build and a window build share target/debug/loupe,
 # and Cargo will skip a later window rebuild after this one replaces that file.
 export CARGO_TARGET_DIR="$PWD/target/cli"
 cargo build -q
-BIN="$CARGO_TARGET_DIR/debug/photo-engine"
+BIN="$CARGO_TARGET_DIR/debug/loupe"
 
 # Real photographs, named so the words in the query are not in the path.
 # Ranking then has to come from the picture.
@@ -88,7 +88,7 @@ if [[ -z "$ready" ]]; then
   tail -80 "$ROOT/serve.err" >&2
   exit 1
 fi
-export PHOTO_ENGINE_GEMMA_URL="${ready#ready }"
+export LOUPE_GEMMA_URL="${ready#ready }"
 
 "$BIN" index "$ROOT/local"
 "$BIN" index "$ROOT/volumes/BackupHDD"
@@ -159,7 +159,7 @@ grep -q 'order 0.2.0 = 0.2.0' "$REPORT" || fail "equal versions did not match"
 grep -q 'order 0.2.0 > 0.1.0' "$REPORT" || fail "newer local version compared wrong"
 grep -q 'order 0.1 < 0.1.1' "$REPORT" || fail "a longer version compared wrong"
 grep -q 'feed-empty no-feed' "$REPORT" || fail "an empty feed was not offline"
-grep -q 'feed-newer available 99.0.0 https://example.test/photo-engine' "$REPORT" || fail "a newer feed was not offered"
+grep -q 'feed-newer available 99.0.0 https://example.test/loupe' "$REPORT" || fail "a newer feed was not offered"
 grep -q 'feed-same current' "$REPORT" || fail "the same version was not current"
 grep -q 'feed-older current' "$REPORT" || fail "an older feed looked newer"
 grep -q 'feed-bad failed' "$REPORT" || fail "a bad feed was accepted"

@@ -1,7 +1,7 @@
 //! Folder list, shortcut chord, and update check used by the window.
 //!
 //! Search still goes through `sources` and `lookup`. Nothing here writes a
-//! catalog except `index_folder`, which is the same path as `photo-engine index`.
+//! catalog except `index_folder`, which is the same path as `loupe index`.
 
 #![cfg_attr(not(feature = "gui"), allow(dead_code))]
 
@@ -375,7 +375,7 @@ pub fn check_update(feed: &str, current: &str) -> UpdateReport {
     }
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(15))
-        .user_agent("photo-engine")
+        .user_agent("loupe")
         .build();
     match agent.get(feed).call() {
         Ok(response) => match response.into_string() {
@@ -752,17 +752,17 @@ pub fn print_self_check() -> Result<()> {
 
     println!("feed-empty {}", feed_tag(&UpdateReport::NoFeed));
     let newer = interpret_feed(
-        r#"{"version":"99.0.0","url":"https://example.test/photo-engine"}"#,
+        r#"{"version":"99.0.0","url":"https://example.test/loupe"}"#,
         APP_VERSION,
     );
     println!("feed-newer {}", feed_tag(&newer));
     let same = interpret_feed(
-        &format!(r#"{{"version":"{APP_VERSION}","url":"https://example.test/photo-engine"}}"#),
+        &format!(r#"{{"version":"{APP_VERSION}","url":"https://example.test/loupe"}}"#),
         APP_VERSION,
     );
     println!("feed-same {}", feed_tag(&same));
     let older = interpret_feed(
-        r#"{"version":"0.0.1","url":"https://example.test/photo-engine"}"#,
+        r#"{"version":"0.0.1","url":"https://example.test/loupe"}"#,
         APP_VERSION,
     );
     println!("feed-older {}", feed_tag(&older));
