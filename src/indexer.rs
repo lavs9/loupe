@@ -36,10 +36,33 @@ pub fn write_config(drive_root: &Path) -> Result<()> {
     std::fs::create_dir_all(dir.join("models"))?;
     std::fs::create_dir_all(dir.join("cache/previews"))?;
     std::fs::create_dir_all(dir.join("db"))?;
+    hide_dot_catalog(&dir);
     let mut file = File::create(dir.join("config.toml"))?;
     writeln!(file, "model = \"{MODEL_ID}\"")?;
     writeln!(file, "dimensions = {}", crate::db::EMBED_DIM)?;
     Ok(())
+}
+
+/// Dot name is enough for ls; Finder on some volumes still lists `.photo_index`
+/// unless the UF_HIDDEN flag is set.
+fn hide_dot_catalog(path: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+            return;
+        };
+        unsafe {
+            let mut st: libc::stat = std::mem::zeroed();
+            if libc::lstat(c_path.as_ptr(), &mut st) != 0 {
+                return;
+            }
+            let flags = st.st_flags | libc::UF_HIDDEN;
+            let _ = libc::chflags(c_path.as_ptr(), flags);
+        }
+    }
+    let _ = path;
 }
 
 pub fn run_incremental_index(
@@ -80,7 +103,7 @@ pub fn run_incremental_index(
                     .as_ref()
                     .ok()
                     .and_then(|entry| entry.file_name().to_str())
-                    .map(|name| name != "Search" && name != ".photo_index")
+                    .map(keep_scan_name)
                     .unwrap_or(true)
             });
         })
@@ -210,6 +233,18 @@ fn access_blocked(err: &anyhow::Error) -> bool {
             io.kind() == std::io::ErrorKind::PermissionDenied || io.raw_os_error() == Some(1)
         })
     })
+}
+
+fn keep_scan_name(name: &str) -> bool {
+    if name == "Search" || name == ".photo_index" {
+        return false;
+    }
+    // Photos.app (and iPhoto / Aperture) libraries are packages, not folders
+    // of pictures. Walking them indexes Apple's internals and misses edits.
+    let lower = name.to_ascii_lowercase();
+    !lower.ends_with(".photoslibrary")
+        && !lower.ends_with(".photolibrary")
+        && !lower.ends_with(".migratedphotolibrary")
 }
 
 fn emit(tick: &mut dyn FnMut(ScanTick), report: &IndexReport, file: &str) {

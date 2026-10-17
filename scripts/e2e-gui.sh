@@ -74,14 +74,14 @@ for _ in $(seq 1 60); do
     cat "$ROOT/gui.err" >&2
     exit 1
   fi
-  if grep -q '^window open$' "$ROOT/gui.out" && grep -q '^shortcut registered ctrl+alt+super+f19$' "$ROOT/gui.out"; then
+  if grep -q '^window open$' "$ROOT/gui.out" && grep -q '^shortcut registered ctrl+alt+super+f19$' "$ROOT/gui.out" && grep -q '^menu bar ready$' "$ROOT/gui.out" && grep -q '^idle$' "$ROOT/gui.out"; then
     opened=1
     break
   fi
   sleep 0.5
 done
 if [[ -z "$opened" ]]; then
-  echo "the window did not open, or the shortcut was not registered" >&2
+  echo "the window did not park in the menu bar, or the shortcut was not registered" >&2
   cat "$ROOT/gui.out" >&2
   cat "$ROOT/gui.err" >&2
   exit 1

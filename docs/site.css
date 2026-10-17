@@ -118,6 +118,22 @@ code {
   color: var(--mute);
 }
 
+.download {
+  display: inline-block;
+  margin: 0.4rem 0 1.2rem;
+  padding: 0.55rem 1.1rem;
+  border: 1px solid var(--safelight);
+  color: var(--void);
+  background: var(--safelight);
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+
+.download:hover {
+  color: var(--void);
+  filter: brightness(1.08);
+}
+
 .note {
   color: var(--mute);
   font-size: 1rem;

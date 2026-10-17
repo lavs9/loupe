@@ -8,9 +8,23 @@ Loupe sits in the macOS menu bar. ⇧⌘Space opens search. ⌘Q parks it. Quit 
 
 **Apple Silicon.** EmbeddingGemma 2 runs on this machine. Nothing about the photos is sent to a server.
 
-## Status
+## Install
 
-Private preview. The window, menu bar, Settings, and first-run model download work on this Mac.
+Apple Silicon. Unsigned `.pkg` for now — [issue #4](https://github.com/lavs9/loupe/issues/4) is the signed notarized installer.
+
+1. Download `Loupe-0.1.0.pkg` from [Releases](https://github.com/lavs9/loupe/releases).
+2. Right-click the file, choose **Open**. (Gatekeeper blocks a plain double-click until the pkg is notarized.)
+3. Loupe sits in the menu bar. ⇧⌘Space opens search.
+4. First search downloads EmbeddingGemma 2 (~865 MB) into `~/Library/Application Support/loupe/`.
+
+Build it yourself:
+
+```
+./scripts/package-macos.sh
+open dist/Loupe-0.1.0.pkg
+```
+
+Site: [lavs9.github.io/loupe](https://lavs9.github.io/loupe/).
 
 | Next | |
 |---|---|
@@ -18,7 +32,7 @@ Private preview. The window, menu bar, Settings, and first-run model download wo
 | Signed Mac installer | [issue #4](https://github.com/lavs9/loupe/issues/4) · [docs/APPLE.md](docs/APPLE.md) |
 | Photos.app library | [issue #2](https://github.com/lavs9/loupe/issues/2) |
 
-## Run the window
+## Run from source
 
 ```
 cargo build --features gui
@@ -83,7 +97,7 @@ cargo build                         # CLI
 cargo build --features gui          # CLI + window
 ./scripts/e2e.sh
 ./scripts/e2e-gui.sh
-./scripts/package-macos.sh          # dist/Loupe.app (unsigned)
+./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-0.1.0.pkg (unsigned)
 ```
 
 ## Documents

@@ -4,7 +4,7 @@ Goal: a Gatekeeper-clean `.pkg` that installs `Loupe.app` in `/Applications`, si
 
 The packaging script is `scripts/package-macos.sh`. The entitlements file is `scripts/Loupe.entitlements`. Bundle id: `app.loupe.gui`.
 
-This Mac currently has **0 signing identities**. Nothing below can be executed until the certificates are in the login keychain.
+This Mac currently has **0 signing identities**. v0.1.0 ships an **unsigned** `.pkg` (right-click Open). The steps below are what turn that into a Gatekeeper-clean double-click.
 
 ## 1. Account
 
@@ -63,7 +63,8 @@ APPLE_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 
 ## 6. Distribute
 
-- [ ] GitHub Release on [lavs9/loupe](https://github.com/lavs9/loupe) with the stapled `.pkg` (repo can stay private for a closed beta).
+- [x] GitHub Release on [lavs9/loupe](https://github.com/lavs9/loupe) with the unsigned v0.1.0 `.pkg`.
+- [ ] Later release with the stapled, notarized `.pkg`.
 - [ ] Update feed JSON `{version,url}` pointed at that release page. The app opens the page; it does not replace the binary yet.
 - [ ] Sparkle or a signed delta is a later version.
 

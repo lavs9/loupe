@@ -4,6 +4,8 @@ mod embedder;
 mod gemma;
 #[cfg(feature = "gui")]
 mod gui;
+#[cfg(feature = "gui")]
+mod menu_bar;
 mod indexer;
 mod lookup;
 mod parser;
@@ -121,6 +123,11 @@ fn main() -> Result<()> {
 fn open_gui() -> Result<()> {
     #[cfg(feature = "gui")]
     {
+        if !menu_bar::take_seat()? {
+            println!("already running");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            return Ok(());
+        }
         gui::run()
     }
     #[cfg(not(feature = "gui"))]
@@ -184,7 +191,7 @@ async fn run_command(command: Commands) -> Result<()> {
                 &errors,
             );
             if set.catalogs.is_empty() {
-                anyhow::bail!("nothing to search");
+                return Ok(());
             }
         }
 

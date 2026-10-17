@@ -77,6 +77,7 @@ pub struct GuiSettings {
     pub check_updates: bool,
     pub update_feed: String,
     pub last_check_unix: u64,
+    pub open_at_login: bool,
 }
 
 pub const THEME_DARKROOM: &str = "darkroom";
@@ -117,6 +118,7 @@ pub fn load_settings() -> GuiSettings {
         check_updates: true,
         update_feed: String::new(),
         last_check_unix: 0,
+        open_at_login: false,
     };
     let Ok(text) = fs::read_to_string(settings_path()) else {
         return settings;
@@ -139,6 +141,7 @@ pub fn load_settings() -> GuiSettings {
                 }
             }
             "check_updates" => settings.check_updates = value.trim() != "false",
+            "open_at_login" => settings.open_at_login = value.trim() == "true",
             "update_feed" => settings.update_feed = value.trim().to_string(),
             "last_check_unix" => {
                 settings.last_check_unix = value.trim().parse().unwrap_or(0);
@@ -155,10 +158,11 @@ pub fn save_settings(settings: &GuiSettings) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let body = format!(
-        "shortcut={}\ntheme={}\ncheck_updates={}\nupdate_feed={}\nlast_check_unix={}\n",
+        "shortcut={}\ntheme={}\ncheck_updates={}\nopen_at_login={}\nupdate_feed={}\nlast_check_unix={}\n",
         settings.shortcut,
         settings.theme,
         if settings.check_updates { "true" } else { "false" },
+        if settings.open_at_login { "true" } else { "false" },
         settings.update_feed,
         settings.last_check_unix,
     );
@@ -548,7 +552,11 @@ fn push_row(
     remembered: bool,
     media: &HashMap<PathBuf, DiskMedium>,
 ) -> Result<()> {
-    let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let key = if sources::path_on_live_volume(&path) {
+        fs::canonicalize(&path).unwrap_or_else(|_| path.clone())
+    } else {
+        path.clone()
+    };
     if !seen.insert(key.clone()) {
         return Ok(());
     }
@@ -560,7 +568,7 @@ fn push_row(
 fn describe_row(path: PathBuf, remembered: bool, medium: DiskMedium) -> Result<FolderRow> {
     let kind = disk_kind(&path);
     let label = sources::label_for(&path);
-    let index = if !path.exists() {
+    let index = if !sources::path_on_live_volume(&path) || !path.exists() {
         IndexState::NotConnected
     } else if let Some(catalog) = sources::find_catalog(&path) {
         match CatalogDb::open_readonly(&catalog.db_path).and_then(|db| db.stats()) {
@@ -646,10 +654,21 @@ pub fn index_folder_live(
 pub fn search_photos(embedder: &dyn MultimodalEmbedder, query: &str, limit: usize) -> Result<SearchOutcome> {
     let set = sources::collect(&[])?;
     if set.catalogs.is_empty() {
+        let notes = notice_lines(&set.notes);
+        let unplugged = set
+            .notes
+            .iter()
+            .filter(|note| note.status == "not connected")
+            .count();
+        let index_line = match unplugged {
+            0 => "No indexes to search.".into(),
+            1 => "A disk is unplugged. Folders on this Mac are still searchable.".into(),
+            n => format!("{n} disks are unplugged. Folders on this Mac are still searchable."),
+        };
         return Ok(SearchOutcome {
             hits: Vec::new(),
-            index_line: "No indexes to search.".into(),
-            notes: set.notes.iter().map(note_sentence).collect(),
+            index_line,
+            notes,
             errors: Vec::new(),
         });
     }
@@ -668,9 +687,28 @@ pub fn search_photos(embedder: &dyn MultimodalEmbedder, query: &str, limit: usiz
     Ok(SearchOutcome {
         hits,
         index_line,
-        notes: set.notes.iter().map(note_sentence).collect(),
+        notes: notice_lines(&set.notes),
         errors,
     })
+}
+
+fn notice_lines(notes: &[SourceNote]) -> Vec<String> {
+    let unplugged = notes
+        .iter()
+        .filter(|note| note.status == "not connected")
+        .count();
+    let mut lines = Vec::new();
+    match unplugged {
+        0 => {}
+        1 => lines.push("A disk is unplugged.".into()),
+        n => lines.push(format!("{n} disks are unplugged.")),
+    }
+    for note in notes {
+        if note.status != "not connected" {
+            lines.push(note_sentence(note));
+        }
+    }
+    lines
 }
 
 fn note_sentence(note: &SourceNote) -> String {

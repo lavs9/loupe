@@ -1,6 +1,6 @@
 # Shipping Loupe on macOS
 
-Loupe is an accessory menu-bar app. The installer is a signed `.pkg` that drops `Loupe.app` in `/Applications`. The EmbeddingGemma 2 weights (~865 MB) are **not** in the package. First launch downloads them into `~/Library/Application Support/loupe/` while the icon sits in the menu bar.
+Loupe is an accessory menu-bar app. The first public installer is an **unsigned** `.pkg` that drops `Loupe.app` in `/Applications`. Right-click the pkg, choose Open. A signed, notarized pkg is [issue #4](https://github.com/lavs9/loupe/issues/4). The EmbeddingGemma 2 weights (~865 MB) are **not** in the package. First search downloads them into `~/Library/Application Support/loupe/` while the icon sits in the menu bar.
 
 ## What we ship
 
@@ -25,7 +25,7 @@ The full Apple account, certificate, icon, and notarization checklist is [APPLE.
 4. Create an app-specific password for notarization, or an App Store Connect API key (`AuthKey_*.p8`).
 5. Apple Team ID, e.g. `ABCD123456`. Bundle id: `app.loupe.gui`.
 
-Without those certificates the script still builds an unsigned `.app` you can run locally with right-click Open.
+Without those certificates `./scripts/package-macos.sh` still builds an ad-hoc-signed `.app` and an unsigned `.pkg`. Gatekeeper wants right-click Open. That unsigned pkg is the v0.1.0 GitHub Release.
 
 ## Build and sign
 
