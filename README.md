@@ -107,6 +107,7 @@ cargo build --features gui          # CLI + window
 | [SPEC.md](SPEC.md) | Product and engine |
 | [docs/SHIP.md](docs/SHIP.md) | What the installer contains |
 | [docs/APPLE.md](docs/APPLE.md) | Apple Developer, signing, notarization |
-| Site | `docs/index.html` — GitHub Pages |
+| [docs/MODELS.md](docs/MODELS.md) | RAM picks: 16 / 24 / 32 GB, and models besides Gemma |
+| Site | https://lavs9.github.io/loupe/ |
 
 The crate and the command are `loupe`. On-disk catalogs stay `.photo_index/`.
