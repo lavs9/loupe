@@ -1,5 +1,7 @@
 # Models
 
+Internal notes. Not on the public site. Later embedders are GitHub issues, not landing-page copy.
+
 Loupe searches photos with a **multimodal embedding** model: a photo and a sentence land in the same vector space. This is not a chat model. Weights are hundreds of megabytes, not tens of gigabytes. Unified memory on Apple Silicon still matters while indexing, because llama.cpp, image decode, and macOS share the same pool.
 
 Catalogs are tied to the model id in `.photo_index/config.toml`. A disk indexed with EmbeddingGemma 2 is searched with EmbeddingGemma 2. Mixing models means a re-index of that folder. That is why the **default is one model that fits a 16 GB Mac**, so every HDD stays portable.
@@ -21,6 +23,8 @@ Peak unified memory while embedding is about **2 GB** on top of macOS. A 16 GB M
 Do not put a 2B vision embedder on a 16 GB Mac as the default. It would win some photo benchmarks and lose the “plug this HDD into any Loupe Mac” rule.
 
 ## Other models we can offer
+
+Tracked as issues, not site copy: [#5](https://github.com/lavs9/loupe/issues/5) Qwen3-VL-Embedding 2B, [#6](https://github.com/lavs9/loupe/issues/6) jina-embeddings-v5-omni.
 
 These are the next candidates. None of them are wired in the app yet. Each would write a different `model =` in `config.toml`.
 
