@@ -1,26 +1,42 @@
-//! Search window. The catalog, the disks, and the model stay in the rest of the crate.
-
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::StyledExt;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::base::{h_flex, v_flex, Selectable, StyledExt};
+use gpui_kit::component::alert::Alert;
+use gpui_kit::component::button::{
+    Button, ButtonVariant, ButtonVariants, Toggle, ToggleGroup, ToggleVariants,
+};
+use gpui_kit::component::carousel::{
+    Carousel, CarouselContent, CarouselItem, CarouselPagination, CarouselPaginationItem,
+    CarouselState,
+};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::description_list::DescriptionList;
+use gpui_kit::component::empty::{
+    Empty as EmptyState, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia,
+    EmptyMediaVariant, EmptyTitle,
+};
 use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::progress::Progress;
+use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::scroll::{ScrollableElement, Scrollbar};
+use gpui_kit::component::skeleton::Skeleton;
+use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme, Sizable, Theme, ThemeMode};
+use gpui_kit::component::{
+    v_virtual_list, ActiveTheme, Sizable, Theme, ThemeMode, TitleBar, VirtualListScrollHandle,
+};
 use gpui_kit::*;
 
 use crate::app_model::{
@@ -28,7 +44,7 @@ use crate::app_model::{
     index_failure, index_folder_live, index_summary, open_path, open_url, parse_chord, release_url,
     reveal_path,
     save_settings, search_photos, update_is_due, write_preview, Chord, ChordKey, DiskKind, FolderRow,
-    GuiSettings, IndexLive, IndexState, UpdateReport, APP_VERSION,
+    GuiSettings, IndexLive, IndexState, UpdateReport, APP_VERSION, THEME_DARKROOM, THEME_PAPER,
 };
 use crate::gemma::GemmaEmbedder;
 use crate::lookup::RankedHit;
@@ -45,9 +61,11 @@ actions!(
         RevealResult,
         ToggleGrid,
         Dismiss,
-        TogglePreview,
+        RefreshPreview,
         CopyResult,
         QuitApp,
+        FocusSearch,
+        OpenSettings,
     ]
 );
 
@@ -55,6 +73,21 @@ const SEARCH: &str = "PhotoSearch";
 const RESULTS: &str = "PhotoResults";
 const PRODUCT: &str = "Loupe";
 const WORDMARK_FONT: &str = "Baskerville";
+const SEARCH_LIMIT: usize = 48;
+const TRAFFIC_LIGHT_CLEARANCE: f32 = 80.;
+const PAGE_INSET: f32 = 20.;
+const TILE_GAP: f32 = 12.;
+const SHEET_PAD: f32 = 24.;
+const SHEET_MIN_LAYOUT: f32 = 80.;
+const SHEET_FALLBACK_INNER: f32 = 880.;
+const SHEET_MIN_INNER: f32 = 300.;
+const TITLE_CHROME: f32 = 34.;
+const SEARCH_BAR_HEIGHT: f32 = 52.;
+const STATUS_BAR_HEIGHT: f32 = 36.;
+const INDEX_BANNER_HEIGHT: f32 = 40.;
+const LIST_ROW_HEIGHT: f32 = 88.;
+const TILE_CAPTION: f32 = 40.;
+const PREVIEW_WIDTH: f32 = 320.;
 
 thread_local! {
     static HOTKEYS: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
@@ -62,27 +95,22 @@ thread_local! {
 
 enum Screen {
     Search,
-    Folders,
+    Settings,
 }
 
 pub fn run() -> Result<()> {
     application().with_assets(assets::AllAssets).run(|cx| {
         init(cx);
-        apply_theme(cx);
+        let settings = app_model::load_settings();
+        apply_named_theme(&settings.theme, cx);
         bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(1240.), px(820.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(860.), px(560.))),
             window_background: WindowBackgroundAppearance::Opaque,
-            titlebar: Some(TitlebarOptions {
-                title: Some(PRODUCT.into()),
-                appears_transparent: true,
-                traffic_light_position: Some(gpui::point(px(12.0), px(14.0))),
-            }),
-            app_owns_titlebar_drag: true,
             focus: true,
-            ..Default::default()
+            ..TitleBar::window_options()
         };
         match open_window(options, cx, |window, cx| {
             cx.new(|cx| PhotoApp::new(window, cx))
@@ -103,8 +131,15 @@ fn note(line: &str) {
     let _ = io::stdout().flush();
 }
 
-/// Darkroom light table. Warm black surface, paper-coloured type, safelight amber for selection.
-fn apply_theme(cx: &mut App) {
+fn apply_named_theme(name: &str, cx: &mut App) {
+    if name == THEME_PAPER {
+        apply_paper_theme(cx);
+    } else {
+        apply_darkroom_theme(cx);
+    }
+}
+
+fn apply_darkroom_theme(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
     Theme::update(cx, |theme| {
         let void: Hsla = rgb(0x161411).into();
@@ -189,6 +224,91 @@ fn apply_theme(cx: &mut App) {
     });
 }
 
+fn apply_paper_theme(cx: &mut App) {
+    Theme::change(ThemeMode::Light, None, cx);
+    Theme::update(cx, |theme| {
+        let paper: Hsla = rgb(0xF3EEE4).into();
+        let sheet: Hsla = rgb(0xEBE6DC).into();
+        let hairline: Hsla = rgb(0xC9C0B2).into();
+        let ink: Hsla = rgb(0x1A1612).into();
+        let mute: Hsla = rgb(0x6F675C).into();
+        let safelight: Hsla = rgb(0xC07E2C).into();
+        let safelight_hot: Hsla = rgb(0xD4923A).into();
+        let safelight_deep: Hsla = rgb(0xA86C22).into();
+        let wash: Hsla = rgb(0xE4DCCE).into();
+        let danger: Hsla = rgb(0xB44A32).into();
+        let moss: Hsla = rgb(0x4E7A3C).into();
+        let cream: Hsla = rgb(0xFFF8EE).into();
+
+        theme.colors.background = paper;
+        theme.colors.foreground = ink;
+        theme.colors.title_bar = sheet;
+        theme.colors.title_bar_border = hairline;
+        theme.colors.status_bar = sheet;
+        theme.colors.status_bar_border = hairline;
+        theme.colors.border = hairline;
+        theme.colors.window_border = hairline;
+        theme.colors.muted = wash;
+        theme.colors.muted_foreground = mute;
+        theme.colors.primary = safelight;
+        theme.colors.primary_foreground = cream;
+        theme.colors.primary_hover = safelight_hot;
+        theme.colors.primary_active = safelight_deep;
+        theme.colors.button_primary = safelight;
+        theme.colors.button_primary_foreground = cream;
+        theme.colors.button_primary_hover = safelight_hot;
+        theme.colors.button_primary_active = safelight_deep;
+        theme.colors.accent = rgb(0xE8DCC8).into();
+        theme.colors.accent_foreground = ink;
+        theme.colors.secondary = wash;
+        theme.colors.secondary_foreground = ink;
+        theme.colors.secondary_hover = rgb(0xDDD4C4).into();
+        theme.colors.secondary_active = rgb(0xD4CABB).into();
+        theme.colors.button_secondary = wash;
+        theme.colors.button_secondary_foreground = ink;
+        theme.colors.button_secondary_hover = rgb(0xDDD4C4).into();
+        theme.colors.button_secondary_active = rgb(0xD4CABB).into();
+        theme.colors.ring = safelight;
+        theme.colors.caret = safelight;
+        theme.colors.selection = safelight.opacity(0.28);
+        theme.colors.input = hairline;
+        theme.colors.popover = cream;
+        theme.colors.popover_foreground = ink;
+        theme.colors.list = paper;
+        theme.colors.list_hover = wash;
+        theme.colors.list_active = rgb(0xE4D5BE).into();
+        theme.colors.list_active_border = safelight;
+        theme.colors.danger = danger;
+        theme.colors.danger_foreground = cream;
+        theme.colors.danger_hover = rgb(0xC45C3E).into();
+        theme.colors.success = moss;
+        theme.colors.success_foreground = cream;
+        theme.colors.sidebar = sheet;
+        theme.colors.sidebar_foreground = ink;
+        theme.colors.sidebar_border = hairline;
+        theme.colors.sidebar_accent = wash;
+        theme.colors.sidebar_accent_foreground = ink;
+        theme.colors.sidebar_primary = safelight;
+        theme.colors.sidebar_primary_foreground = cream;
+        theme.colors.group_box = cream;
+        theme.colors.group_box_foreground = ink;
+        theme.colors.progress_bar = safelight;
+        theme.colors.scrollbar = paper;
+        theme.colors.scrollbar_thumb = rgb(0xB7AFA2).into();
+        theme.colors.scrollbar_thumb_hover = rgb(0xA3988A).into();
+        theme.colors.link = safelight_deep;
+        theme.colors.link_hover = safelight;
+        theme.colors.tab = sheet;
+        theme.colors.tab_active = paper;
+        theme.colors.tab_active_foreground = ink;
+        theme.colors.tab_foreground = mute;
+        theme.colors.tab_bar = sheet;
+        theme.radius = px(4.);
+        theme.radius_lg = px(8.);
+        theme.shadow = false;
+    });
+}
+
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("up", MoveUp, Some(SEARCH)),
@@ -200,9 +320,13 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-o", ToggleGrid, Some(SEARCH)),
         KeyBinding::new("escape", Dismiss, Some(SEARCH)),
         KeyBinding::new("secondary-q", QuitApp, Some(SEARCH)),
-        KeyBinding::new("space", TogglePreview, Some(RESULTS)),
+        KeyBinding::new("space", RefreshPreview, Some(RESULTS)),
         KeyBinding::new("secondary-c", CopyResult, Some(RESULTS)),
         KeyBinding::new("secondary-c", CopyResult, Some(SEARCH)),
+        KeyBinding::new("secondary-f", FocusSearch, Some(SEARCH)),
+        KeyBinding::new("/", FocusSearch, Some(RESULTS)),
+        KeyBinding::new("secondary-comma", OpenSettings, Some(SEARCH)),
+        KeyBinding::new("secondary-comma", OpenSettings, Some(RESULTS)),
     ]);
 }
 
@@ -223,8 +347,6 @@ struct PhotoApp {
     notes: Vec<String>,
     errors: Vec<String>,
     preview: Option<std::path::PathBuf>,
-    /// Photo the side preview belongs to. Cleared with the preview so a new
-    /// selection never keeps the previous picture on screen.
     preview_for: Option<PathBuf>,
     rows: Vec<FolderRow>,
     settings: GuiSettings,
@@ -236,7 +358,8 @@ struct PhotoApp {
     embedder: Arc<GemmaEmbedder>,
     focus: FocusHandle,
     results_focus: FocusHandle,
-    hits_scroll: ScrollHandle,
+    hits_scroll: VirtualListScrollHandle,
+    welcome_carousel: Entity<CarouselState>,
     search_task: Option<Task<()>>,
     preview_task: Option<Task<()>>,
     thumb_task: Option<Task<()>>,
@@ -244,6 +367,7 @@ struct PhotoApp {
     _index_watch: Option<Task<()>>,
     update_task: Option<Task<()>>,
     _hotkey_task: Task<()>,
+    _carousel_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -251,7 +375,7 @@ impl PhotoApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = app_model::load_settings();
         let query_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("a wet street at night, 35mm")
+            InputState::new(window, cx).placeholder("Describe a photo")
         });
         let feed_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("https://example.com/loupe.json")
@@ -275,15 +399,21 @@ impl PhotoApp {
                 this.schedule_search(cx);
             }
         });
+        let focus_lost = cx.on_focus_lost(window, |this, window, cx| {
+            let target = window
+                .focus_lost_restore_target(cx)
+                .unwrap_or_else(|| this.query_input.focus_handle(cx));
+            target.focus(window, cx);
+        });
 
         let rows = folder_rows().unwrap_or_default();
         let status = if rows
             .iter()
             .any(|row| matches!(row.index, IndexState::Ready { .. }))
         {
-            "Type what the photograph showed."
+            "Describe a photo."
         } else {
-            "No index yet. Open Disks and index a folder or a mounted disk."
+            "No index yet. Open Settings and index a folder or a mounted disk."
         };
         let index_line = ready_line(&rows);
         let update_line = if settings.update_feed.is_empty() {
@@ -307,6 +437,9 @@ impl PhotoApp {
 
         let focus = cx.focus_handle().tab_stop(true);
         let results_focus = cx.focus_handle().tab_stop(true);
+        let welcome_carousel = cx.new(|_| {
+            CarouselState::new(SUGGESTED_QUERIES.len()).with_looping(true)
+        });
         let due = update_is_due(&settings);
         let hotkey_task = cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -347,19 +480,58 @@ impl PhotoApp {
             embedder: Arc::new(GemmaEmbedder::new()),
             focus,
             results_focus,
-            hits_scroll: ScrollHandle::new(),
+            hits_scroll: VirtualListScrollHandle::new(),
             search_task: None,
             preview_task: None,
             thumb_task: None,
             index_task: None,
             _index_watch: None,
             update_task: None,
+            welcome_carousel,
             _hotkey_task: hotkey_task,
-            _subscriptions: vec![subscription],
+            _carousel_task: cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(4))
+                        .await;
+                    let _ = this.update(cx, |view, cx| {
+                        if matches!(view.screen, Screen::Search)
+                            && view.query.trim().is_empty()
+                            && view.hits.is_empty()
+                        {
+                            view.welcome_carousel.update(cx, |state, cx| {
+                                let _ = state.select_next(cx);
+                            });
+                        }
+                    });
+                }
+            }),
+            _subscriptions: vec![subscription, focus_lost],
         };
         if due {
             app.spawn_update(cx);
         }
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(500))
+                .await;
+            let _ = this.update_in(cx, |view, window, _cx| {
+                let vp = window.viewport_size();
+                let b = view.hits_scroll.bounds();
+                let line = format!(
+                    "layout viewport={:.0}x{:.0} welcome origin={:.0},{:.0} size={:.0}x{:.0}",
+                    f32::from(vp.width),
+                    f32::from(vp.height),
+                    f32::from(b.origin.x),
+                    f32::from(b.origin.y),
+                    f32::from(b.size.width),
+                    f32::from(b.size.height),
+                );
+                note(&line);
+                let _ = std::fs::write("/tmp/loupe-layout.txt", format!("{line}\n"));
+            });
+        })
+        .detach();
         app
     }
 
@@ -384,7 +556,8 @@ impl PhotoApp {
             self.preview = None;
             self.preview_for = None;
             self.index_line = ready_line(&self.rows).into();
-            self.status = "Type what the photograph showed.".into();
+            self.status = "Describe a photo.".into();
+            self.thumbs.clear();
             cx.notify();
             return;
         }
@@ -403,7 +576,7 @@ impl PhotoApp {
                 return;
             }
             let outcome = cx
-                .background_spawn(async move { search_photos(embedder.as_ref(), &query, 20) })
+                .background_spawn(async move { search_photos(embedder.as_ref(), &query, SEARCH_LIMIT) })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 if view.generation != generation {
@@ -416,6 +589,7 @@ impl PhotoApp {
                         view.index_line = outcome.index_line.into();
                         view.notes = outcome.notes;
                         view.errors = outcome.errors;
+                        view.retain_thumbs();
                         view.status = if view.hits.is_empty() {
                             "No matching photos.".into()
                         } else {
@@ -425,17 +599,21 @@ impl PhotoApp {
                     Err(err) => {
                         view.hits.clear();
                         view.selected = 0;
+                        view.thumbs.clear();
                         view.status = format!("Search failed. {err}").into();
                     }
                 }
                 view.warm_thumbs(cx);
-                if !view.hits.is_empty() {
-                    view.hits_scroll.scroll_to_item(view.selected);
-                }
+                view.scroll_selected_into_view();
                 view.queue_side_preview(cx);
                 cx.notify();
             });
         }));
+    }
+
+    fn retain_thumbs(&mut self) {
+        let keep: HashSet<PathBuf> = self.hits.iter().map(|hit| hit.path.clone()).collect();
+        self.thumbs.retain(|path, _| keep.contains(path));
     }
 
     fn warm_thumbs(&mut self, cx: &mut Context<Self>) {
@@ -508,52 +686,24 @@ impl PhotoApp {
         if !self.grid {
             return 1;
         }
-        let width = f32::from(self.hits_scroll.bounds().size.width);
-        if width < 160. {
-            return 1;
-        }
-        // 216px tile, 8px gap, 12px padding on each side of the sheet (24px total padding).
-        let inner = (width - 24.).max(216.);
-        (((inner + 8.) / 224.).floor() as isize).max(1)
+        self.sheet_metrics().cols as isize
     }
 
-    /// One row up or down, using the laid-out tiles. Before the first layout,
-    /// the caller falls back to [`Self::columns`].
-    fn row_step(&self, forward: bool) -> RowStep {
-        let Some(current) = self.hits_scroll.bounds_for_item(self.selected) else {
-            return RowStep::Unknown;
-        };
-        let (current_x, current_y) = item_center(current);
-        let min_dy = (f32::from(current.size.height) * 0.45).max(8.);
-        let mut best: Option<(usize, f32, f32)> = None;
-        for index in 0..self.hits.len() {
-            if index == self.selected {
-                continue;
-            }
-            let Some(bounds) = self.hits_scroll.bounds_for_item(index) else {
-                continue;
-            };
-            let (x, y) = item_center(bounds);
-            let dy = y - current_y;
-            let crossed = if forward { dy >= min_dy } else { -dy >= min_dy };
-            if !crossed {
-                continue;
-            }
-            let ady = dy.abs();
-            let adx = (x - current_x).abs();
-            let take = match best {
-                None => true,
-                Some((_, best_dy, best_dx)) => {
-                    ady + 8. < best_dy || ((ady - best_dy).abs() <= min_dy && adx < best_dx)
-                }
-            };
-            if take {
-                best = Some((index, ady, adx));
-            }
+    fn sheet_metrics(&self) -> SheetMetrics {
+        SheetMetrics::from_width(f32::from(self.hits_scroll.bounds().size.width))
+    }
+
+    fn scroll_selected_into_view(&self) {
+        if self.hits.is_empty() {
+            return;
         }
-        match best {
-            Some((index, _, _)) => RowStep::Move(index),
-            None => RowStep::Stay,
+        if self.grid {
+            let cols = self.columns().max(1) as usize;
+            self.hits_scroll
+                .scroll_to_item(self.selected / cols, ScrollStrategy::Center);
+        } else {
+            self.hits_scroll
+                .scroll_to_item(self.selected, ScrollStrategy::Center);
         }
     }
 
@@ -569,19 +719,17 @@ impl PhotoApp {
         }
         let last = self.hits.len() as isize - 1;
         let next = if vertical != 0 {
-            match self.row_step(vertical > 0) {
-                RowStep::Move(index) => index,
-                RowStep::Stay => self.selected,
-                RowStep::Unknown => {
-                    let delta = vertical.signum() * self.columns();
-                    (self.selected as isize + delta).clamp(0, last) as usize
-                }
-            }
+            let step = if self.grid {
+                self.columns().max(1)
+            } else {
+                1
+            };
+            (self.selected as isize + vertical.signum() * step).clamp(0, last) as usize
         } else {
             (self.selected as isize + horizontal).clamp(0, last) as usize
         };
         if next == self.selected {
-            self.hits_scroll.scroll_to_item(self.selected);
+            self.scroll_selected_into_view();
             self.results_focus.focus(window, cx);
             cx.notify();
             return;
@@ -594,7 +742,7 @@ impl PhotoApp {
             return;
         }
         self.selected = index.min(self.hits.len() - 1);
-        self.hits_scroll.scroll_to_item(self.selected);
+        self.scroll_selected_into_view();
         self.results_focus.focus(window, cx);
         self.queue_side_preview(cx);
         cx.notify();
@@ -695,7 +843,7 @@ impl PhotoApp {
         cx.notify();
     }
 
-    fn toggle_preview(&mut self, cx: &mut Context<Self>) {
+    fn refresh_preview(&mut self, cx: &mut Context<Self>) {
         if !matches!(self.screen, Screen::Search) {
             return;
         }
@@ -704,7 +852,6 @@ impl PhotoApp {
             cx.notify();
             return;
         }
-        // The side column is the preview. Space asks for it again and does not hide it.
         self.preview_for = None;
         self.queue_side_preview(cx);
         cx.notify();
@@ -870,6 +1017,23 @@ impl PhotoApp {
         cx.notify();
     }
 
+    fn set_theme(&mut self, name: &str, cx: &mut Context<Self>) {
+        let name = if name == THEME_PAPER {
+            THEME_PAPER
+        } else {
+            THEME_DARKROOM
+        };
+        if self.settings.theme == name {
+            return;
+        }
+        self.settings.theme = name.to_string();
+        apply_named_theme(name, cx);
+        if let Err(err) = save_settings(&self.settings) {
+            self.status = err.to_string().into();
+        }
+        cx.notify();
+    }
+
     fn spawn_update(&mut self, cx: &mut Context<Self>) {
         let feed = self.settings.update_feed.clone();
         self.update_line = "Checking for an update…".into();
@@ -932,7 +1096,7 @@ impl PhotoApp {
         if self.hits.is_empty() {
             self.query_input.focus_handle(cx).focus(window, cx);
         } else {
-            self.hits_scroll.scroll_to_item(self.selected);
+            self.scroll_selected_into_view();
             self.results_focus.focus(window, cx);
         }
         cx.notify();
@@ -946,12 +1110,29 @@ impl PhotoApp {
         cx.hide();
     }
 
-    fn on_preview(&mut self, _: &TogglePreview, _: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_preview(cx);
+    fn on_preview(&mut self, _: &RefreshPreview, _: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_preview(cx);
     }
 
     fn on_copy(&mut self, _: &CopyResult, _: &mut Window, cx: &mut Context<Self>) {
         self.copy_selected(cx);
+    }
+
+    fn on_focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.screen, Screen::Search) {
+            self.screen = Screen::Search;
+        }
+        self.query_input.focus_handle(cx).focus(window, cx);
+        self.query_input.update(cx, |state, cx| {
+            state.select_all(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn on_open_settings(&mut self, _: &OpenSettings, _: &mut Window, cx: &mut Context<Self>) {
+        self.screen = Screen::Settings;
+        self.reload_rows();
+        cx.notify();
     }
 
     fn apply_query(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -973,10 +1154,8 @@ impl PhotoApp {
     }
 
     fn render_top_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let border = cx.theme().border;
         let mute = cx.theme().muted_foreground;
         let paper = cx.theme().foreground;
-        let safelight = cx.theme().primary;
         let is_search = matches!(self.screen, Screen::Search);
         let ready_count: i64 = self
             .rows
@@ -994,121 +1173,92 @@ impl PhotoApp {
             String::new()
         };
 
-        div()
-            .w_full()
-            .h(px(52.))
-            .border_b_1()
-            .border_color(border)
-            .bg(cx.theme().background)
-            .pl(px(80.))
-            .pr_5()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_6()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_6()
-                    .flex_shrink_0()
-                    .child(
-                        div()
-                            .font_family(WORDMARK_FONT)
-                            .italic()
-                            .text_lg()
-                            .text_color(paper)
-                            .child(PRODUCT),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_end()
-                            .gap_5()
-                            .child(screen_tab(
-                                "tab-search",
-                                "Search",
-                                is_search,
-                                paper,
-                                mute,
-                                safelight,
-                                cx.listener(|this, _, window, cx| {
-                                    this.present(window, cx);
-                                }),
-                            ))
-                            .child(screen_tab(
-                                "tab-folders",
-                                "Disks",
-                                !is_search,
-                                paper,
-                                mute,
-                                safelight,
-                                cx.listener(|this, _, _, cx| {
-                                    this.screen = Screen::Folders;
-                                    this.reload_rows();
-                                    cx.notify();
-                                }),
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .flex_shrink_0()
-                    .children(if is_search {
-                        vec![
-                            Button::new("toggle-grid-btn")
+        TitleBar::new().child(
+            h_flex()
+                .w_full()
+                .h_full()
+                .items_center()
+                .pr(px(PAGE_INSET))
+                .gap_4()
+                .child(
+                    div()
+                        .id("wordmark")
+                        .font_family(WORDMARK_FONT)
+                        .italic()
+                        .text_lg()
+                        .text_color(paper)
+                        .cursor_pointer()
+                        .child(PRODUCT)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.present(window, cx);
+                        })),
+                )
+                .child(div().flex_1())
+                .child(
+                    h_flex()
+                        .h_full()
+                        .items_center()
+                        .gap_3()
+                        .flex_shrink_0()
+                        .children(is_search.then(|| {
+                            ToggleGroup::new("view-mode")
+                                .segmented()
+                                .outline()
                                 .xsmall()
-                                .ghost()
-                                .icon(IconName::LayoutGrid)
-                                .tooltip("Contact sheet (⌘O)")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if !this.grid {
+                                .child(
+                                    Toggle::new(0)
+                                        .icon(IconName::LayoutGrid)
+                                        .tooltip("Contact sheet (⌘O)")
+                                        .checked(self.grid),
+                                )
+                                .child(
+                                    Toggle::new(1)
+                                        .icon(IconName::LayoutList)
+                                        .tooltip("List (⌘O)")
+                                        .checked(!self.grid),
+                                )
+                                .on_click(cx.listener(|this, states: &Vec<bool>, window, cx| {
+                                    let want_grid =
+                                        states.first().copied().unwrap_or(this.grid);
+                                    let want_list =
+                                        states.get(1).copied().unwrap_or(!this.grid);
+                                    if (want_grid && !this.grid) || (want_list && this.grid)
+                                    {
                                         this.on_grid(&ToggleGrid, window, cx);
                                     }
                                 }))
-                                .into_any_element(),
-                            Button::new("toggle-list-btn")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::LayoutList)
-                                .tooltip("List (⌘O)")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if this.grid {
-                                        this.on_grid(&ToggleGrid, window, cx);
-                                    }
-                                }))
-                                .into_any_element(),
+                        }))
+                        .children(is_search.then(|| {
                             div()
                                 .text_xs()
                                 .text_color(mute)
                                 .child(count_label)
-                                .into_any_element(),
-                        ]
-                    } else {
-                        vec![
-                            Button::new("top-add-folder")
-                                .small()
-                                .primary()
-                                .icon(IconName::FolderPlus)
-                                .label("Add folder")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.add_folder(cx);
-                                }))
-                                .into_any_element(),
-                        ]
-                    }),
-            )
+                        }))
+                        .child(
+                            Button::new("settings-btn")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::Settings)
+                                .tooltip("Settings (⌘,)")
+                                .selected(!is_search)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if matches!(this.screen, Screen::Settings) {
+                                        this.present(window, cx);
+                                    } else {
+                                        this.on_open_settings(&OpenSettings, window, cx);
+                                    }
+                                })),
+                        ),
+                ),
+        )
     }
 
     fn render_index_banner(&self, cx: &Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
         div()
             .w_full()
+            .h(px(INDEX_BANNER_HEIGHT))
             .px_5()
-            .py_2()
             .border_b_1()
             .border_color(border)
             .bg(cx.theme().primary.opacity(0.12))
@@ -1129,8 +1279,24 @@ impl PhotoApp {
             )
     }
 
-    fn welcome_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted_fg = cx.theme().muted_foreground;
+    fn work_height(&self, window: &Window) -> f32 {
+        let h = f32::from(window.viewport_size().height);
+        let mut chrome = TITLE_CHROME + STATUS_BAR_HEIGHT;
+        if matches!(self.screen, Screen::Search) {
+            chrome += SEARCH_BAR_HEIGHT;
+        }
+        if self.busy {
+            chrome += INDEX_BANNER_HEIGHT;
+        }
+        (h - chrome).max(160.)
+    }
+
+    fn welcome_view(
+        &self,
+        work_h: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let total_photos: i64 = self
             .rows
             .iter()
@@ -1139,235 +1305,392 @@ impl PhotoApp {
                 _ => None,
             })
             .sum();
+        let muted = cx.theme().muted_foreground;
+        let global = shortcut_label(&self.settings);
+        let slides = SUGGESTED_QUERIES.iter().enumerate().map(|(index, &suggestion)| {
+            CarouselItem::new(("welcome-slide", index), index, &self.welcome_carousel)
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Button::new(SharedString::from(format!("welcome-{suggestion}")))
+                        .ghost()
+                        .label(suggestion)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.apply_query(suggestion, window, cx);
+                        })),
+                )
+        });
+        let dots = SUGGESTED_QUERIES.iter().enumerate().map(|(index, _)| {
+            CarouselPaginationItem::new(("welcome-dot", index), index, &self.welcome_carousel)
+        });
 
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .p_8()
-            .gap_5()
+        v_flex()
+            .id("welcome")
+            .track_scroll(&self.hits_scroll)
+            .w_full()
+            .h(px(work_h))
             .child(
-                div()
-                    .font_family(WORDMARK_FONT)
-                    .italic()
-                    .text_xl()
-                    .text_center()
-                    .child("What did the photograph show?"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .justify_center()
-                    .gap_2()
-                    .max_w(px(560.))
-                    .children(SUGGESTED_QUERIES.iter().map(|&suggestion| {
-                        Button::new(SharedString::from(format!("welcome-{suggestion}")))
-                            .small()
-                            .ghost()
-                            .label(suggestion)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.apply_query(suggestion, window, cx);
-                            }))
-                    })),
-            )
-            .child(
-                if total_photos > 0 {
-                    div()
-                        .pt_2()
-                        .text_xs()
-                        .text_color(muted_fg)
-                        .child(format!("{total_photos} photographs on disk"))
-                        .into_any_element()
-                } else {
-                    Button::new("welcome-add-folder")
-                        .small()
-                        .primary()
-                        .icon(IconName::FolderPlus)
-                        .label("Index a folder")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.add_folder(cx);
-                        }))
-                        .into_any_element()
-                },
+                EmptyState::new()
+                    .h_full()
+                    .w_full()
+                    .header(
+                        EmptyHeader::new()
+                            .title(
+                                EmptyTitle::new()
+                                    .font_family(WORDMARK_FONT)
+                                    .italic()
+                                    .text_xl()
+                                    .child("Find a photograph"),
+                            )
+                            .description(EmptyDescription::new().child(if total_photos > 0 {
+                                format!("{total_photos} photographs on disk")
+                            } else {
+                                "Open Settings and index a folder, then describe a photo.".into()
+                            })),
+                    )
+                    .content(
+                        EmptyContent::new()
+                            .w_full()
+                            .max_w(px(520.))
+                            .gap_6()
+                            .child(
+                                Carousel::new("welcome-carousel", &self.welcome_carousel)
+                                    .w_full()
+                                    .accessibility_label("Try a search")
+                                    .child(
+                                        CarouselContent::new(&self.welcome_carousel)
+                                            .w_full()
+                                            .h(px(72.))
+                                            .children(slides),
+                                    )
+                                    .child(CarouselPagination::new().children(dots)),
+                            )
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_2()
+                                    .pt_2()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child("Shortcuts"),
+                                    )
+                                    .child(welcome_shortcut(
+                                        &FocusSearch,
+                                        SEARCH,
+                                        "secondary-f",
+                                        "Focus the search field",
+                                        window,
+                                        muted,
+                                    ))
+                                    .child(welcome_shortcut(
+                                        &ToggleGrid,
+                                        SEARCH,
+                                        "secondary-o",
+                                        "Contact sheet or list",
+                                        window,
+                                        muted,
+                                    ))
+                                    .child(welcome_shortcut(
+                                        &OpenSettings,
+                                        SEARCH,
+                                        "secondary-comma",
+                                        "Settings",
+                                        window,
+                                        muted,
+                                    ))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_3()
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .child(key_chip(
+                                                        &MoveLeft,
+                                                        SEARCH,
+                                                        "←",
+                                                        window,
+                                                    ))
+                                                    .child(key_chip(
+                                                        &MoveRight,
+                                                        SEARCH,
+                                                        "→",
+                                                        window,
+                                                    ))
+                                                    .child(key_chip(
+                                                        &MoveUp,
+                                                        SEARCH,
+                                                        "↑",
+                                                        window,
+                                                    ))
+                                                    .child(key_chip(
+                                                        &MoveDown,
+                                                        SEARCH,
+                                                        "↓",
+                                                        window,
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(muted)
+                                                    .child("Move through photos"),
+                                            ),
+                                    )
+                                    .child(welcome_shortcut(
+                                        &OpenResult,
+                                        SEARCH,
+                                        "enter",
+                                        "Open the selected photo",
+                                        window,
+                                        muted,
+                                    ))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_3()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_medium()
+                                                    .child(global),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(muted)
+                                                    .child("Open Loupe from anywhere"),
+                                            ),
+                                    ),
+                            ),
+                    ),
             )
     }
 
-    fn no_results_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted_fg = cx.theme().muted_foreground;
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .p_8()
-            .gap_3()
+    fn no_results_view(&self, work_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .id("no-results")
+            .w_full()
+            .h(px(work_h))
             .child(
-                div()
-                    .font_family(WORDMARK_FONT)
-                    .italic()
-                    .text_lg()
-                    .child("Nothing matched that."),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(muted_fg)
-                    .text_center()
-                    .max_w(px(400.))
-                    .child("Try fewer words, or open Disks and index the folder that holds the photos."),
-            )
-            .child(
-                Button::new("clear-query-btn")
-                    .small()
-                    .ghost()
-                    .label("Clear")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.clear_query(window, cx);
-                    })),
+                EmptyState::new()
+                    .h_full()
+                    .w_full()
+                    .header(
+                        EmptyHeader::new()
+                            .media(
+                                EmptyMedia::new()
+                                    .with_variant(EmptyMediaVariant::Icon)
+                                    .child(IconName::Image),
+                            )
+                            .title(
+                                EmptyTitle::new()
+                                    .font_family(WORDMARK_FONT)
+                                    .italic()
+                                    .text_lg()
+                                    .child("Nothing matched that."),
+                            )
+                            .description(EmptyDescription::new().child(
+                                "Try fewer words, or open Settings and index the folder that holds the photos.",
+                            )),
+                    )
+                    .content(
+                        EmptyContent::new().child(
+                            Button::new("clear-query-btn")
+                                .small()
+                                .ghost()
+                                .label("Clear")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.clear_query(window, cx);
+                                })),
+                        ),
+                    ),
             )
     }
 
-    fn search_page(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let hits = self.hits.clone();
-        let selected = self.selected;
-        let grid = self.grid;
+    fn search_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
-
-        let has_hits = !hits.is_empty();
+        let work_h = self.work_height(window);
+        let has_hits = !self.hits.is_empty();
         let is_empty_query = self.query.trim().is_empty();
 
-        let search_bar = div()
+        let search_bar = h_flex()
+            .id("search-bar")
             .w_full()
-            .px_5()
-            .py_3()
+            .h(px(SEARCH_BAR_HEIGHT))
+            .flex_shrink_0()
+            .pl(px(TRAFFIC_LIGHT_CLEARANCE))
+            .pr(px(PAGE_INSET))
             .border_b_1()
             .border_color(border)
             .bg(cx.theme().background)
-            .flex()
             .items_center()
-            .gap_2()
             .child(
                 div()
                     .flex_1()
                     .child(Input::new(&self.query_input).cleanable(true)),
-            )
-            .children((!self.query.trim().is_empty()).then(|| {
-                Button::new("clear-search-btn")
-                    .small()
-                    .ghost()
-                    .icon(IconName::X)
-                    .tooltip("Clear")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.clear_query(window, cx);
-                    }))
-            }));
+            );
 
         let list_content: AnyElement = if is_empty_query && !has_hits {
-            self.welcome_view(cx).into_any_element()
+            self.welcome_view(work_h, window, cx).into_any_element()
         } else if !is_empty_query && !has_hits && !self.busy {
-            self.no_results_view(cx).into_any_element()
+            self.no_results_view(work_h, cx).into_any_element()
         } else {
-            let mut list = div()
-                .id("hits")
-                .track_focus(&self.results_focus)
-                .track_scroll(&self.hits_scroll)
-                .key_context(RESULTS)
-                .on_action(cx.listener(Self::on_preview))
-                .on_action(cx.listener(Self::on_copy))
-                .flex_1()
-                .min_w(px(0.))
-                .min_h(px(0.))
-                .overflow_y_scroll()
-                .p_3();
-
-            if grid {
-                list = list.flex().flex_wrap().content_start().gap_2();
-                for (index, hit) in hits.into_iter().enumerate() {
-                    list = list.child(self.tile(index, hit, selected == index, cx));
-                }
-            } else {
-                list = list.flex().flex_col().gap_2();
-                for (index, hit) in hits.into_iter().enumerate() {
-                    list = list.child(self.hit_row(index, hit, selected == index, cx));
-                }
-            }
-
-            div()
-                .flex_1()
-                .min_h(px(0.))
-                .min_w(px(0.))
-                .flex()
-                .overflow_hidden()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .min_h(px(0.))
-                        .flex()
-                        .flex_col()
-                        .overflow_hidden()
-                        .child(list),
-                )
-                .child(self.side_pane(cx))
-                .into_any_element()
+            self.hits_sheet(cx, work_h).into_any_element()
         };
 
-        div()
-            .flex_1()
-            .min_h(px(0.))
-            .flex()
-            .flex_col()
+        v_flex()
+            .id("search-page")
+            .w_full()
             .bg(cx.theme().background)
             .children(self.index_problem.as_ref().map(|(_, sentence)| {
-                div()
+                Alert::error("index-problem", sentence.clone())
+                    .small()
                     .mx_6()
                     .mt_3()
-                    .p_3()
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(cx.theme().danger)
-                    .bg(cx.theme().danger.opacity(0.1))
-                    .text_xs()
-                    .text_color(cx.theme().danger_foreground)
-                    .child(sentence.clone())
             }))
-            .children(self.notes.iter().map(|note| {
-                div().mx_6().mt_1().text_xs().text_color(cx.theme().muted_foreground).child(note.clone())
+            .children(self.notes.iter().enumerate().map(|(i, note)| {
+                Alert::info(("search-note", i), note.clone())
+                    .xsmall()
+                    .mx_6()
+                    .mt_1()
             }))
-            .children(self.errors.iter().map(|err| {
-                div().mx_6().mt_1().text_xs().text_color(cx.theme().danger).child(err.clone())
+            .children(self.errors.iter().enumerate().map(|(i, err)| {
+                Alert::error(("search-error", i), err.clone())
+                    .xsmall()
+                    .mx_6()
+                    .mt_1()
             }))
             .child(search_bar)
+            .child(list_content)
+    }
+
+    fn hits_sheet(&mut self, cx: &mut Context<Self>, work_h: f32) -> impl IntoElement {
+        let metrics = self.sheet_metrics();
+        let cols = metrics.cols.max(1);
+        let tile_h = metrics.tile_h;
+        let hits_len = self.hits.len();
+        let item_sizes = if self.grid {
+            let rows = hits_len.div_ceil(cols);
+            let row_h = px(tile_h + TILE_CAPTION + TILE_GAP);
+            Rc::new(vec![size(px(1.), row_h); rows])
+        } else {
+            Rc::new(vec![size(px(1.), px(LIST_ROW_HEIGHT)); hits_len])
+        };
+        let entity = cx.entity();
+        let list_id = if self.grid { "hits-grid" } else { "hits-rows" };
+        let list = v_virtual_list(
+            entity,
+            list_id,
+            item_sizes,
+            move |this, range, _, cx| {
+                if this.grid {
+                    range
+                        .map(|row| this.grid_row(row, cx))
+                        .collect::<Vec<_>>()
+                } else {
+                    range
+                        .map(|ix| this.list_row(ix, cx))
+                        .collect::<Vec<_>>()
+                }
+            },
+        )
+        .track_scroll(&self.hits_scroll)
+        .size_full();
+
+        let sheet = v_flex()
+            .id("hits")
+            .track_focus(&self.results_focus)
+            .key_context(RESULTS)
+            .on_action(cx.listener(Self::on_preview))
+            .on_action(cx.listener(Self::on_copy))
+            .on_action(cx.listener(Self::on_focus_search))
+            .on_action(cx.listener(Self::on_open_settings))
+            .w_full()
+            .h_full()
+            .relative()
             .child(
                 div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .min_w(px(0.))
-                    .flex()
-                    .child(list_content),
+                    .id("hits-body")
+                    .absolute()
+                    .inset_0()
+                    .p_3()
+                    .child(list),
             )
+            .child(Scrollbar::vertical(&self.hits_scroll));
+
+        div()
+            .id("sheet")
+            .w_full()
+            .h(px(work_h))
+            .child(
+                h_resizable("sheet-split")
+                    .size(px(work_h))
+                    .child(resizable_panel().child(sheet))
+                    .child(
+                        resizable_panel()
+                            .size(px(PREVIEW_WIDTH))
+                            .size_range(px(240.)..px(520.))
+                            .child(self.side_pane(cx)),
+                    ),
+            )
+    }
+
+    fn grid_row(&mut self, row: usize, cx: &mut Context<Self>) -> AnyElement {
+        let metrics = self.sheet_metrics();
+        let cols = metrics.cols.max(1);
+        let start = row * cols;
+        let selected = self.selected;
+        let mut row_el = h_flex()
+            .w_full()
+            .gap(px(TILE_GAP))
+            .items_start()
+            .pb(px(TILE_GAP));
+        for offset in 0..cols {
+            let index = start + offset;
+            if index >= self.hits.len() {
+                break;
+            }
+            let hit = self.hits[index].clone();
+            row_el = row_el.child(self.tile(
+                index,
+                hit,
+                selected == index,
+                metrics.tile_w,
+                metrics.tile_h,
+                cx,
+            ));
+        }
+        row_el.into_any_element()
+    }
+
+    fn list_row(&mut self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(hit) = self.hits.get(index).cloned() else {
+            return div().w_full().h(px(LIST_ROW_HEIGHT)).into_any_element();
+        };
+        let selected = self.selected == index;
+        self.hit_row(index, hit, selected, cx).into_any_element()
     }
 
     fn side_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
         let muted_fg = cx.theme().muted_foreground;
-        let mut pane = div()
+        let mut pane = v_flex()
             .id("side-preview")
-            .w(px(320.))
+            .size_full()
             .min_h(px(0.))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
             .gap_3()
             .border_l_1()
             .border_color(border)
             .bg(cx.theme().background)
             .p_4()
-            .overflow_y_scroll();
+            .overflow_y_scrollbar();
 
         let Some(hit) = self.hits.get(self.selected) else {
             return pane.child(
@@ -1397,7 +1720,7 @@ impl PhotoApp {
             .child(
                 div()
                     .w_full()
-                    .h(px(280.))
+                    .h(px(420.))
                     .flex_shrink_0()
                     .overflow_hidden()
                     .bg(rgb(0x0E0C0A))
@@ -1406,19 +1729,9 @@ impl PhotoApp {
                     .justify_center()
                     .child(
                         if let Some(p) = preview_img {
-                            img(Arc::<std::path::Path>::from(p.to_path_buf()))
-                                .size_full()
-                                .object_fit(ObjectFit::Contain)
-                                .into_any_element()
+                            photo_image(p, "side-preview-img", ObjectFit::Contain)
                         } else {
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_color(muted_fg.opacity(0.5))
-                                .child(IconName::Image)
-                                .into_any_element()
+                            Skeleton::new().size_full().into_any_element()
                         }
                     ),
             )
@@ -1582,13 +1895,14 @@ impl PhotoApp {
         }
         let meta_line = specs.join("  •  ");
 
-        div()
+        h_flex()
             .id(("hit", index))
-            .flex()
+            .w_full()
+            .h(px(LIST_ROW_HEIGHT))
+            .flex_shrink_0()
             .gap_3()
             .items_center()
-            .px_2()
-            .py_1_5()
+            .px_3()
             .border_l_2()
             .border_color(if selected {
                 cx.theme().primary
@@ -1597,7 +1911,7 @@ impl PhotoApp {
             })
             .bg(bg)
             .hover(|s| s.bg(cx.theme().accent))
-            .child(thumb_box(thumb.as_deref(), 48., 48., cx))
+            .child(thumb_box(thumb.as_deref(), 96., 72., ("row-thumb", index), cx))
             .child(
                 div()
                     .flex_1()
@@ -1679,6 +1993,8 @@ impl PhotoApp {
         index: usize,
         hit: RankedHit,
         selected: bool,
+        tile_w: f32,
+        tile_h: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let name = file_name(&hit);
@@ -1703,33 +2019,24 @@ impl PhotoApp {
 
         div()
             .id(("tile", index))
-            .w(px(216.))
+            .w(px(tile_w))
+            .flex_shrink_0()
             .flex()
             .flex_col()
             .gap_1()
             .child(
                 div()
                     .w_full()
-                    .h(px(156.))
+                    .h(px(tile_h))
                     .overflow_hidden()
                     .border_2()
                     .border_color(border_color)
                     .bg(rgb(0x0E0C0A))
                     .child(
                         if let Some(p) = thumb.as_deref().filter(|p| p.is_file()) {
-                            img(Arc::<std::path::Path>::from(p.to_path_buf()))
-                                .size_full()
-                                .object_fit(ObjectFit::Cover)
-                                .into_any_element()
+                            photo_image(p, ("tile-img", index), ObjectFit::Cover)
                         } else {
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_color(cx.theme().muted_foreground.opacity(0.5))
-                                .child(IconName::Image)
-                                .into_any_element()
+                            Skeleton::new().size_full().into_any_element()
                         }
                     ),
             )
@@ -1777,7 +2084,7 @@ impl PhotoApp {
             }))
     }
 
-    fn folders_page(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn folders_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows.clone();
         let mac: Vec<(usize, FolderRow)> = rows
             .iter()
@@ -1827,54 +2134,53 @@ impl PhotoApp {
         let problem = self.index_problem.as_ref().map(|(_, sentence)| sentence.clone());
         let muted = cx.theme().muted_foreground;
 
-        div()
-            .flex_1()
-            .min_h(px(0.))
-            .flex()
-            .flex_col()
+        let work_h = self.work_height(window);
+        v_flex()
+            .id("settings-page")
+            .w_full()
+            .h(px(work_h))
             .bg(cx.theme().background)
             .child(
-                div()
-                    .id("folders-body")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h(px(0.))
+                v_flex()
+                    .id("settings-body")
+                    .w_full()
+                    .h_full()
                     .gap_6()
-                    .p_6()
-                    .overflow_y_scroll()
+                    .pl(px(TRAFFIC_LIGHT_CLEARANCE))
+                    .pr(px(PAGE_INSET))
+                    .py_6()
+                    .overflow_y_scrollbar()
                     .child(
-                        div()
-                            .font_family(WORDMARK_FONT)
-                            .italic()
-                            .text_lg()
-                            .child(summary),
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .font_family(WORDMARK_FONT)
+                                    .italic()
+                                    .text_lg()
+                                    .child("Settings"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child(summary),
+                            ),
                     )
                     .children(problem.map(|sentence| {
-                        div()
-                            .p_3()
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(cx.theme().danger)
-                            .bg(cx.theme().danger.opacity(0.1))
-                            .text_sm()
-                            .text_color(cx.theme().danger_foreground)
-                            .child(sentence)
+                        Alert::error("folders-index-problem", sentence).small()
                     }))
-                    // Local Folders Section
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_2()
                             .child(
-                                div()
-                                    .flex()
+                                h_flex()
+                                    .w_full()
                                     .items_center()
-                                    .justify_between()
                                     .child(
-                                        div()
-                                            .flex()
+                                        h_flex()
                                             .items_center()
                                             .gap_2()
                                             .text_sm()
@@ -1882,30 +2188,34 @@ impl PhotoApp {
                                             .child(IconName::Folder)
                                             .child("This Mac"),
                                     )
+                                    .child(div().flex_1())
+                                    .child(
+                                        Button::new("settings-add-folder")
+                                            .small()
+                                            .primary()
+                                            .icon(IconName::FolderPlus)
+                                            .label("Add folder")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.add_folder(cx);
+                                            })),
+                                    ),
                             )
                             .child(mac_list),
                     )
-                    // Disks Section
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_2()
                             .child(
-                                div()
-                                    .flex()
+                                h_flex()
+                                    .w_full()
                                     .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .text_sm()
-                                            .font_semibold()
-                                            .child(IconName::HardDrive)
-                                            .child("Plugged-in disks"),
-                                    )
+                                    .gap_2()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .child(IconName::HardDrive)
+                                    .child("Plugged-in disks"),
                             )
                             .children(no_disks.then(|| {
                                 div()
@@ -1916,7 +2226,6 @@ impl PhotoApp {
                             }))
                             .child(disk_list),
                     )
-                    // Settings Section
                     .child(
                         div()
                             .flex()
@@ -1934,17 +2243,52 @@ impl PhotoApp {
                                     .child("Preferences"),
                             )
                             .child(
+                                GroupBox::new()
+                                    .id("theme-box")
+                                    .outline()
+                                    .title("Appearance")
+                                    .child("Darkroom is the default. Paper is a light table.")
+                                    .child(
+                                        ToggleGroup::new("theme-mode")
+                                            .segmented()
+                                            .outline()
+                                            .child(
+                                                Toggle::new(0)
+                                                    .label("Darkroom")
+                                                    .checked(self.settings.theme != THEME_PAPER),
+                                            )
+                                            .child(
+                                                Toggle::new(1)
+                                                    .label("Paper")
+                                                    .checked(self.settings.theme == THEME_PAPER),
+                                            )
+                                            .on_click(cx.listener(|this, states: &Vec<bool>, _, cx| {
+                                                // ToggleGroup flips only the clicked item; the other stays.
+                                                let want_paper =
+                                                    states.get(1).copied().unwrap_or(false);
+                                                let want_darkroom =
+                                                    states.first().copied().unwrap_or(false);
+                                                let paper_now =
+                                                    this.settings.theme == THEME_PAPER;
+                                                if want_paper && !paper_now {
+                                                    this.set_theme(THEME_PAPER, cx);
+                                                } else if want_darkroom && paper_now {
+                                                    this.set_theme(THEME_DARKROOM, cx);
+                                                }
+                                            })),
+                                    ),
+                            )
+                            .child(
                                 div()
                                     .flex()
                                     .gap_4()
                                     .child(
-                                        // Shortcut Box
                                         GroupBox::new()
                                             .id("shortcut-box")
                                             .outline()
                                             .title("Global Shortcut")
                                             .child(format!("{shortcut} opens search from any app."))
-                                            .child("Use shift, ctrl, alt, and super, then space, a letter, or f1-f24.")
+                                            .child("Use shift, ctrl, alt, and super, then any key. Letters, digits, function keys, arrows, and punctuation all work.")
                                             .child(Input::new(&self.shortcut_input))
                                             .child(div().text_xs().text_color(cx.theme().danger).child(self.shortcut_error.clone()))
                                             .child(
@@ -1956,7 +2300,6 @@ impl PhotoApp {
                                             ),
                                     )
                                     .child(
-                                        // Update Box
                                         GroupBox::new()
                                             .id("update-box")
                                             .outline()
@@ -2049,25 +2392,23 @@ impl PhotoApp {
             IndexState::Unreadable(_) => Tag::danger().child("unreadable"),
         };
 
-        div()
+        h_flex()
             .id(("folder", index))
-            .flex()
+            .w_full()
             .items_center()
-            .justify_between()
             .gap_4()
             .py_3()
-            .px_1()
             .border_b_1()
             .border_color(cx.theme().border.opacity(0.6))
             .child(
-                div()
-                    .flex()
-                    .items_center()
+                h_flex()
+                    .items_start()
                     .gap_3()
                     .min_w(px(0.))
                     .flex_1()
                     .child(
                         div()
+                            .mt_1()
                             .w(px(8.))
                             .h(px(8.))
                             .rounded_full()
@@ -2075,18 +2416,21 @@ impl PhotoApp {
                             .flex_shrink_0(),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
+                        v_flex()
                             .gap_0p5()
                             .min_w(px(0.))
-                            .flex_1()
                             .child(
-                                div()
-                                    .flex()
+                                h_flex()
                                     .items_center()
-                                    .gap_2_5()
-                                    .child(div().font_semibold().text_sm().child(title))
+                                    .justify_start()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .font_semibold()
+                                            .text_sm()
+                                            .flex_shrink_0()
+                                            .child(title),
+                                    )
                                     .child(status_tag)
                                     .children(is_external.then(|| {
                                         let medium_label = match row.medium {
@@ -2115,8 +2459,7 @@ impl PhotoApp {
                     ),
             )
             .child(
-                div()
-                    .flex()
+                h_flex()
                     .items_center()
                     .gap_2()
                     .flex_shrink_0()
@@ -2165,12 +2508,13 @@ impl Render for PhotoApp {
         let top_bar = self.render_top_bar(window, cx);
         let banner = (self.busy).then(|| self.render_index_banner(cx));
         let body: AnyElement = match self.screen {
-            Screen::Folders => self.folders_page(window, cx).into_any_element(),
+            Screen::Settings => self.folders_page(window, cx).into_any_element(),
             Screen::Search => self.search_page(window, cx).into_any_element(),
         };
         let bottom_bar = search_hint(&self.settings, self.status.clone(), window, cx);
+        let viewport = window.viewport_size();
 
-        div()
+        v_flex()
             .id("loupe")
             .track_focus(&self.focus)
             .key_context(SEARCH)
@@ -2184,15 +2528,22 @@ impl Render for PhotoApp {
             .on_action(cx.listener(Self::on_dismiss))
             .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_copy))
-            .size_full()
-            .flex()
-            .flex_col()
+            .on_action(cx.listener(Self::on_focus_search))
+            .on_action(cx.listener(Self::on_open_settings))
+            .w(viewport.width)
+            .h(viewport.height)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(top_bar)
             .children(banner)
             .child(body)
             .child(bottom_bar)
+    }
+}
+
+impl Focusable for PhotoApp {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
     }
 }
 
@@ -2235,16 +2586,6 @@ fn folder_title(row: &FolderRow) -> String {
         .unwrap_or_else(|| row.label.clone())
 }
 
-#[allow(dead_code)]
-fn folder_status(row: &FolderRow) -> String {
-    match &row.index {
-        IndexState::Ready { photos, .. } => format!("{photos} photos"),
-        IndexState::NoIndex => "Not indexed".into(),
-        IndexState::NotConnected => "Not connected".into(),
-        IndexState::Unreadable(_) => "Can't read the index".into(),
-    }
-}
-
 fn folder_hint(row: &FolderRow) -> String {
     let line = match &row.index {
         IndexState::Ready { .. } if row.kind == DiskKind::External => "Search includes this disk.",
@@ -2284,20 +2625,27 @@ fn file_name(hit: &RankedHit) -> String {
         .unwrap_or_else(|| hit.path.display().to_string())
 }
 
-#[allow(dead_code)]
-fn hit_meta(hit: &RankedHit) -> String {
-    let mut line = hit.label.clone();
-    if let Some(camera) = &hit.camera_model {
-        line.push_str("  ");
-        line.push_str(camera);
-    }
-    if let Some(mm) = hit.focal_length_mm {
-        line.push_str(&format!("  {mm:.0} mm"));
-    }
-    line
+fn photo_image(
+    path: &std::path::Path,
+    id: impl Into<ElementId>,
+    fit: ObjectFit,
+) -> AnyElement {
+    img(Arc::<std::path::Path>::from(path.to_path_buf()))
+        .id(id)
+        .size_full()
+        .object_fit(fit)
+        .with_loading(|| Skeleton::new().size_full().into_any_element())
+        .with_fallback(|| Skeleton::new().secondary().size_full().into_any_element())
+        .into_any_element()
 }
 
-fn thumb_box(path: Option<&std::path::Path>, width: f32, height: f32, cx: &App) -> AnyElement {
+fn thumb_box(
+    path: Option<&std::path::Path>,
+    width: f32,
+    height: f32,
+    id: impl Into<ElementId>,
+    _cx: &App,
+) -> AnyElement {
     let frame = div()
         .w(px(width))
         .h(px(height))
@@ -2306,36 +2654,11 @@ fn thumb_box(path: Option<&std::path::Path>, width: f32, height: f32, cx: &App) 
         .bg(rgb(0x0E0C0A));
     if let Some(p) = path.filter(|p| p.is_file()) {
         frame
-            .child(
-                img(Arc::<std::path::Path>::from(p.to_path_buf()))
-                    .w(px(width))
-                    .h(px(height))
-                    .object_fit(ObjectFit::Cover),
-            )
+            .child(photo_image(p, id, ObjectFit::Cover))
             .into_any_element()
     } else {
-        frame
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(cx.theme().muted_foreground.opacity(0.6))
-            .child(IconName::Image)
-            .into_any_element()
+        frame.child(Skeleton::new().size_full()).into_any_element()
     }
-}
-
-#[allow(dead_code)]
-fn index_strip(note: SharedString) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            Progress::new("index-progress")
-                .loading(true)
-                .accessibility_label("Indexing photos"),
-        )
-        .child(div().text_sm().child(note))
 }
 
 fn index_sentence(folder: &str, live: &IndexLive) -> String {
@@ -2359,25 +2682,25 @@ fn search_hint(
     _settings: &GuiSettings,
     status_text: SharedString,
     window: &Window,
-    cx: &App,
+    _cx: &App,
 ) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .px_5()
-        .py_1_5()
-        .border_t_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().background)
-        .text_xs()
-        .text_color(cx.theme().muted_foreground)
-        .child(status_text)
-        .child(
-            div()
-                .flex()
+    StatusBar::new()
+        .h(px(STATUS_BAR_HEIGHT))
+        .pl(px(TRAFFIC_LIGHT_CLEARANCE))
+        .pr(px(PAGE_INSET))
+        .left(status_text)
+        .right(
+            h_flex()
                 .items_center()
                 .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(key_chip(&FocusSearch, SEARCH, "secondary-f", window))
+                        .child("search"),
+                )
                 .child(
                     div()
                         .flex()
@@ -2432,25 +2755,19 @@ fn search_hint(
         )
 }
 
-fn screen_tab(
-    id: &'static str,
-    label: &'static str,
-    active: bool,
-    paper: Hsla,
-    mute: Hsla,
-    safelight: Hsla,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+fn welcome_shortcut(
+    action: &dyn Action,
+    context: &str,
+    fallback: &str,
+    label: &str,
+    window: &Window,
+    muted: Hsla,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .pb(px(6.))
-        .border_b_2()
-        .border_color(if active { safelight } else { safelight.opacity(0.) })
-        .text_sm()
-        .text_color(if active { paper } else { mute })
-        .cursor_pointer()
-        .child(label)
-        .on_click(on_click)
+    h_flex()
+        .items_center()
+        .gap_3()
+        .child(key_chip(action, context, fallback, window))
+        .child(div().text_sm().text_color(muted).child(label.to_string()))
 }
 
 fn key_chip(action: &dyn Action, context: &str, fallback: &str, window: &Window) -> AnyElement {
@@ -2463,17 +2780,34 @@ fn key_chip(action: &dyn Action, context: &str, fallback: &str, window: &Window)
     }
 }
 
-enum RowStep {
-    Move(usize),
-    Stay,
-    Unknown,
+struct SheetMetrics {
+    cols: usize,
+    tile_w: f32,
+    tile_h: f32,
 }
 
-fn item_center(bounds: Bounds<Pixels>) -> (f32, f32) {
-    (
-        f32::from(bounds.left()) + f32::from(bounds.size.width) * 0.5,
-        f32::from(bounds.top()) + f32::from(bounds.size.height) * 0.5,
-    )
+impl SheetMetrics {
+    fn from_width(width: f32) -> Self {
+        let inner = if width < SHEET_MIN_LAYOUT {
+            SHEET_FALLBACK_INNER
+        } else {
+            (width - SHEET_PAD).max(SHEET_MIN_INNER)
+        };
+        let cols = if inner >= 1100. {
+            4
+        } else if inner >= 620. {
+            3
+        } else {
+            2
+        };
+        let tile_w = ((inner - TILE_GAP * (cols as f32 - 1.)) / cols as f32).floor();
+        let tile_h = (tile_w * 0.72).floor().clamp(176., 320.);
+        Self {
+            cols,
+            tile_w,
+            tile_h,
+        }
+    }
 }
 
 fn side_cache(photo: &std::path::Path) -> Option<PathBuf> {
@@ -2520,90 +2854,33 @@ fn install_shortcut(chord: &Chord) -> Result<()> {
 }
 
 fn to_hotkey(chord: &Chord) -> Result<HotKey> {
-    let mut modifiers = Modifiers::empty();
+    let spec = hotkey_spec(chord);
+    HotKey::try_from(spec).map_err(|err| anyhow!("That shortcut is not available. {err}"))
+}
+
+fn hotkey_spec(chord: &Chord) -> String {
+    let mut parts = Vec::new();
     if chord.shift {
-        modifiers |= Modifiers::SHIFT;
+        parts.push("SHIFT".to_string());
     }
     if chord.ctrl {
-        modifiers |= Modifiers::CONTROL;
+        parts.push("CONTROL".to_string());
     }
     if chord.alt {
-        modifiers |= Modifiers::ALT;
+        parts.push("ALT".to_string());
     }
     if chord.super_key {
-        modifiers |= Modifiers::SUPER;
+        parts.push("SUPER".to_string());
     }
-    Ok(HotKey::new(Some(modifiers), chord_code(chord.key)?))
-}
-
-fn chord_code(key: ChordKey) -> Result<Code> {
-    Ok(match key {
-        ChordKey::Space => Code::Space,
-        ChordKey::Letter(ch) => letter_code(ch)?,
-        ChordKey::Function(number) => function_code(number)?,
-    })
-}
-
-fn letter_code(ch: char) -> Result<Code> {
-    Ok(match ch {
-        'a' => Code::KeyA,
-        'b' => Code::KeyB,
-        'c' => Code::KeyC,
-        'd' => Code::KeyD,
-        'e' => Code::KeyE,
-        'f' => Code::KeyF,
-        'g' => Code::KeyG,
-        'h' => Code::KeyH,
-        'i' => Code::KeyI,
-        'j' => Code::KeyJ,
-        'k' => Code::KeyK,
-        'l' => Code::KeyL,
-        'm' => Code::KeyM,
-        'n' => Code::KeyN,
-        'o' => Code::KeyO,
-        'p' => Code::KeyP,
-        'q' => Code::KeyQ,
-        'r' => Code::KeyR,
-        's' => Code::KeyS,
-        't' => Code::KeyT,
-        'u' => Code::KeyU,
-        'v' => Code::KeyV,
-        'w' => Code::KeyW,
-        'x' => Code::KeyX,
-        'y' => Code::KeyY,
-        'z' => Code::KeyZ,
-        _ => anyhow::bail!("unsupported letter"),
-    })
-}
-
-fn function_code(number: u8) -> Result<Code> {
-    Ok(match number {
-        1 => Code::F1,
-        2 => Code::F2,
-        3 => Code::F3,
-        4 => Code::F4,
-        5 => Code::F5,
-        6 => Code::F6,
-        7 => Code::F7,
-        8 => Code::F8,
-        9 => Code::F9,
-        10 => Code::F10,
-        11 => Code::F11,
-        12 => Code::F12,
-        13 => Code::F13,
-        14 => Code::F14,
-        15 => Code::F15,
-        16 => Code::F16,
-        17 => Code::F17,
-        18 => Code::F18,
-        19 => Code::F19,
-        20 => Code::F20,
-        21 => Code::F21,
-        22 => Code::F22,
-        23 => Code::F23,
-        24 => Code::F24,
-        _ => anyhow::bail!("unsupported function key"),
-    })
+    let key = match &chord.key {
+        ChordKey::Space => "SPACE".to_string(),
+        ChordKey::Letter(ch) => ch.to_ascii_uppercase().to_string(),
+        ChordKey::Digit(ch) => ch.to_string(),
+        ChordKey::Function(n) => format!("F{n}"),
+        ChordKey::Other(name) => name.to_uppercase(),
+    };
+    parts.push(key);
+    parts.join("+")
 }
 
 #[cfg(test)]
