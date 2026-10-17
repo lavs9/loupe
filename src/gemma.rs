@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::db::EMBED_DIM;
@@ -22,6 +23,82 @@ const TEXT_BYTES: u64 = 309_855_456;
 const VISION_BYTES: u64 = 554_821_024;
 const TEXT_URL: &str = "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/embeddinggemma-2-Q8_0.gguf";
 const VISION_URL: &str = "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/mmproj-embeddinggemma-2-Q8_0.gguf";
+
+thread_local! {
+    static FETCH: RefCell<Option<Arc<Mutex<FetchLive>>>> = const { RefCell::new(None) };
+}
+
+/// Bytes pulled down while llama.cpp or the GGUF weights are fetched.
+#[derive(Debug, Clone, Default)]
+pub struct FetchLive {
+    pub phase: String,
+    pub got: u64,
+    pub total: u64,
+    pub done: bool,
+    pub error: Option<String>,
+}
+
+/// True when this Mac still needs the llama.cpp binary or the GGUF weights.
+/// A preset `LOUPE_GEMMA_URL` skips the fetch (tests, `loupe serve`).
+pub fn needs_fetch() -> bool {
+    if sources::env_var("LOUPE_GEMMA_URL", "PHOTO_ENGINE_GEMMA_URL").is_ok() {
+        return false;
+    }
+    !server_on_disk() || weights_on_disk().is_none()
+}
+
+/// Download llama.cpp and the GGUF files. Does not start llama-server.
+pub fn prepare_runtime(live: Arc<Mutex<FetchLive>>) -> Result<()> {
+    FETCH.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&live)));
+    let result: Result<()> = (|| {
+        let _ = ensure_server()?;
+        let _ = ensure_weights()?;
+        Ok(())
+    })();
+    FETCH.with(|slot| {
+        if let Some(slot) = slot.borrow().as_ref() {
+            if let Ok(mut guard) = slot.lock() {
+                match &result {
+                    Ok(()) => {
+                        guard.done = true;
+                        guard.phase = "ready".into();
+                    }
+                    Err(err) => {
+                        guard.error = Some(err.to_string());
+                        guard.done = true;
+                    }
+                }
+            }
+        }
+        *slot.borrow_mut() = None;
+    });
+    result
+}
+
+pub fn weights_on_disk() -> Option<(PathBuf, PathBuf)> {
+    for dir in weight_dirs() {
+        if let Some(pair) = weights_ready(&dir) {
+            return Some(pair);
+        }
+    }
+    None
+}
+
+fn server_on_disk() -> bool {
+    find_named(&runtime_dir().join(LLAMA_TAG), "llama-server", 3).is_some()
+}
+
+fn report_fetch(phase: &str, got: u64, total: u64) {
+    FETCH.with(|slot| {
+        if let Some(live) = slot.borrow().as_ref() {
+            if let Ok(mut guard) = live.lock() {
+                guard.phase = phase.to_string();
+                guard.got = got;
+                guard.total = total;
+            }
+        }
+    });
+}
 
 /// One EmbeddingGemma 2 process. A command starts it on the first embed and
 /// stops it on exit, unless `LOUPE_GEMMA_URL` already points at one.
@@ -352,7 +429,8 @@ fn download_file(url: &str, dest: &Path, expected: u64) -> Result<()> {
     let mut file = File::create(&partial)?;
     let mut buf = vec![0u8; 256 * 1024];
     let mut got = 0u64;
-    let mut next_report = 32 * 1024 * 1024;
+    let mut next_report = 8 * 1024 * 1024;
+    report_fetch(&name, 0, expected);
     loop {
         let read = reader.read(&mut buf)?;
         if read == 0 {
@@ -366,9 +444,11 @@ fn download_file(url: &str, dest: &Path, expected: u64) -> Result<()> {
                 got as f64 / 1_000_000.0,
                 expected as f64 / 1_000_000.0
             );
-            next_report += 32 * 1024 * 1024;
+            report_fetch(&name, got, expected);
+            next_report += 8 * 1024 * 1024;
         }
     }
+    report_fetch(&name, got, expected);
     file.sync_all()?;
     drop(file);
     if got != expected {

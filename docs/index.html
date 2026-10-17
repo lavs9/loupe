@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loupe</title>
+  <meta name="description" content="Describe a photo. Matching files come back from this Mac and from any disk you plug in. The index lives next to the pictures.">
+  <meta property="og:title" content="Loupe">
+  <meta property="og:description" content="Describe a photo. The catalog lives on the disk, next to the pictures.">
+  <meta property="og:image" content="assets/hero.jpg">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="apple-touch-icon" href="assets/apple-touch.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="wordmark" href="./">Loupe</a>
+    <nav>
+      <a href="https://github.com/lavs9/loupe/releases">Download</a>
+      <a href="https://github.com/lavs9/loupe">GitHub</a>
+    </nav>
+  </header>
+
+  <img class="hero" src="assets/hero.jpg" alt="A brass loupe on a sheet of photographic prints, lit by a darkroom safelight.">
+
+  <main>
+    <h1>Describe a photo.</h1>
+    <p class="lede">Matching files come back from this Mac and from any disk you plug in that already holds an index.</p>
+
+    <p>The catalog lives next to the pictures, in a folder named <code>.photo_index</code>. Unplug the disk and that catalog leaves with it. Plug the same disk into another Mac running Loupe and search continues. Nothing is copied off the drive. Nothing about the photos is sent to a server.</p>
+
+    <dl class="beats">
+      <div>
+        <dt>This Mac</dt>
+        <dd>Index a folder once. ⇧⌘Space, type what you remember.</dd>
+      </div>
+      <div>
+        <dt>A disk you plug in</dt>
+        <dd>Loupe writes the index on that volume. The drive carries the model too.</dd>
+      </div>
+      <div>
+        <dt>Another Mac</dt>
+        <dd>The same disk, the same catalog. No re-index.</dd>
+      </div>
+    </dl>
+
+    <p><a class="download" href="https://github.com/lavs9/loupe/releases/latest">Download the unsigned installer</a></p>
+    <p class="note">Apple Silicon. Right-click the <code>.pkg</code>, choose Open. Gatekeeper blocks a plain double-click until a signed, notarized installer ships. First search downloads the on-device model (~865 MB).</p>
+
+    <h2>On this machine</h2>
+    <p>Loupe sits in the menu bar. EmbeddingGemma 2 runs locally. The installer does not ship the model; the first search downloads it while the icon waits.</p>
+    <p class="note">A signed Mac installer is next. Photos.app libraries are later.</p>
+  </main>
+
+  <footer>
+    Loupe · Apple Silicon · the index lives with the photos
+  </footer>
+</body>
+</html>

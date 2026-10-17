@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -122,6 +123,9 @@ pub fn label_for(drive_root: &Path) -> String {
 }
 
 fn catalog_at(drive_root: &Path) -> Option<Catalog> {
+    if !path_on_live_volume(drive_root) {
+        return None;
+    }
     let drive_root = fs::canonicalize(drive_root).ok()?;
     let db_path = catalog_file(&drive_root);
     if !db_path.is_file() {
@@ -134,8 +138,83 @@ fn catalog_at(drive_root: &Path) -> Option<Catalog> {
     })
 }
 
+/// True when this path is not on a `/Volumes` disk, or that volume is still mounted.
+///
+/// After a disk is yanked, `exists()` / `canonicalize` on `/Volumes/Name/...` can
+/// block. Consult the mount table first and never stat a missing volume.
+pub fn path_on_live_volume(path: &Path) -> bool {
+    match volume_name(path) {
+        None => true,
+        Some(name) => live_volume_names().contains(&name),
+    }
+}
+
+fn volume_name(path: &Path) -> Option<String> {
+    let root = volumes_root();
+    let rel = path
+        .strip_prefix(&root)
+        .ok()
+        .or_else(|| path.strip_prefix("/Volumes").ok())?;
+    let name = rel.components().next()?.as_os_str();
+    if name.is_empty() || name == "." {
+        return None;
+    }
+    Some(name.to_string_lossy().into_owned())
+}
+
+fn live_volume_names() -> HashSet<String> {
+    if env_os("LOUPE_VOLUMES", "PHOTO_ENGINE_VOLUMES").is_some() {
+        return names_in_dir(&volumes_root());
+    }
+    names_from_mount()
+}
+
+fn names_in_dir(root: &Path) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let Ok(entries) = fs::read_dir(root) else {
+        return names;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(text) = name.to_str() else {
+            continue;
+        };
+        if text.starts_with('.') {
+            continue;
+        }
+        names.insert(text.to_string());
+    }
+    names
+}
+
+fn names_from_mount() -> HashSet<String> {
+    let mut names = HashSet::new();
+    let Ok(output) = Command::new("/sbin/mount").output() else {
+        return names_in_dir(Path::new("/Volumes"));
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let Some(rest) = line.split(" on ").nth(1) else {
+            continue;
+        };
+        let Some((mount, _)) = rest.rsplit_once(" (") else {
+            continue;
+        };
+        let Some(name) = mount.strip_prefix("/Volumes/") else {
+            continue;
+        };
+        if !name.is_empty() {
+            names.insert(name.to_string());
+        }
+    }
+    names
+}
+
 /// Find the catalog that owns `start` by walking up to the mount boundary.
 pub fn find_catalog(start: &Path) -> Option<Catalog> {
+    if !path_on_live_volume(start) {
+        return None;
+    }
     let start = fs::canonicalize(start).ok()?;
     let mut dir = if start.is_file() {
         start.parent()?.to_path_buf()
@@ -249,8 +328,14 @@ pub fn mounted_disks() -> Vec<MountedDisk> {
     }
     paths.sort();
     let synthetic = env_os("LOUPE_VOLUMES", "PHOTO_ENGINE_VOLUMES").is_some();
+    let live = live_volume_names();
     let mut disks = Vec::new();
     for path in paths {
+        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            if !live.contains(name) {
+                continue;
+            }
+        }
         if synthetic {
             disks.push(MountedDisk {
                 path,
@@ -350,20 +435,19 @@ pub fn collect(extra: &[PathBuf]) -> Result<SearchSet> {
     };
 
     for source in extra {
+        if !path_on_live_volume(source) || !source.exists() {
+            notes.push(SourceNote {
+                path: source.clone(),
+                status: "not connected",
+            });
+            continue;
+        }
         match find_catalog(source) {
             Some(catalog) => push(catalog, &mut catalogs, &mut seen),
-            None if !source.exists() => {
-                anyhow::bail!(
-                    "{} is not connected, so there is no index to search",
-                    source.display()
-                );
-            }
-            None => {
-                anyhow::bail!(
-                    "no photo index on {} — index that disk first, search does not build one",
-                    source.display()
-                );
-            }
+            None => notes.push(SourceNote {
+                path: source.clone(),
+                status: "no index",
+            }),
         }
     }
 
@@ -371,7 +455,7 @@ pub fn collect(extra: &[PathBuf]) -> Result<SearchSet> {
         if extra.iter().any(|flag| flag == &source) {
             continue;
         }
-        if !source.exists() {
+        if !path_on_live_volume(&source) || !source.exists() {
             notes.push(SourceNote {
                 path: source,
                 status: "not connected",

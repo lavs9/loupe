@@ -10,7 +10,7 @@ use anyhow::{anyhow, Result};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{h_flex, v_flex, Selectable, StyledExt};
+use gpui_kit::base::{h_flex, v_flex, Disableable, Selectable, StyledExt};
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{
     Button, ButtonVariant, ButtonVariants, Toggle, ToggleGroup, ToggleVariants,
@@ -46,8 +46,9 @@ use crate::app_model::{
     save_settings, search_photos, update_is_due, write_preview, Chord, ChordKey, DiskKind, FolderRow,
     GuiSettings, IndexLive, IndexState, UpdateReport, APP_VERSION, THEME_DARKROOM, THEME_PAPER,
 };
-use crate::gemma::GemmaEmbedder;
+use crate::gemma::{self, FetchLive, GemmaEmbedder};
 use crate::lookup::RankedHit;
+use crate::menu_bar::{self, TrayCommand};
 use crate::sources::{self, DiskMedium};
 
 actions!(
@@ -87,7 +88,7 @@ const STATUS_BAR_HEIGHT: f32 = 36.;
 const INDEX_BANNER_HEIGHT: f32 = 40.;
 const LIST_ROW_HEIGHT: f32 = 88.;
 const TILE_CAPTION: f32 = 40.;
-const PREVIEW_WIDTH: f32 = 320.;
+const PREVIEW_WIDTH: f32 = 440.;
 
 thread_local! {
     static HOTKEYS: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
@@ -101,21 +102,52 @@ enum Screen {
 pub fn run() -> Result<()> {
     application().with_assets(assets::AllAssets).run(|cx| {
         init(cx);
+        cx.set_activation_policy(ActivationPolicy::Accessory);
         let settings = app_model::load_settings();
         apply_named_theme(&settings.theme, cx);
         bind_keys(cx);
+        cx.set_menus([Menu::new("Loupe").items([
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::action("Hide Loupe", Dismiss),
+        ])]);
+        // Input swallows cmd+, as text. Intercept before the field inserts a comma.
+        let settings_chord = cx.intercept_keystrokes(|event, window, cx| {
+            let ks = &event.keystroke;
+            if !ks.modifiers.platform
+                || ks.modifiers.shift
+                || ks.modifiers.alt
+                || ks.modifiers.control
+            {
+                return;
+            }
+            if ks.key == "," || ks.key == "comma" {
+                window.dispatch_action(Box::new(OpenSettings), cx);
+                cx.stop_propagation();
+            }
+        });
+        std::mem::forget(settings_chord);
+        cx.on_action(|_: &Dismiss, cx| cx.hide());
+        cx.on_action(|_: &QuitApp, cx| cx.hide());
+        match menu_bar::install_tray() {
+            Ok(()) => note("menu bar ready"),
+            Err(err) => eprintln!("menu bar: {err}"),
+        }
         let bounds = Bounds::centered(None, size(px(1240.), px(820.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(860.), px(560.))),
             window_background: WindowBackgroundAppearance::Opaque,
-            focus: true,
+            focus: false,
+            show: false,
             ..TitleBar::window_options()
         };
         match open_window(options, cx, |window, cx| {
             cx.new(|cx| PhotoApp::new(window, cx))
         }) {
-            Ok(_) => note("window open"),
+            Ok(_) => {
+                note("window open");
+                note("idle");
+            }
             Err(err) => {
                 eprintln!("could not open the window: {err}");
                 cx.quit();
@@ -319,14 +351,21 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-enter", RevealResult, Some(SEARCH)),
         KeyBinding::new("secondary-o", ToggleGrid, Some(SEARCH)),
         KeyBinding::new("escape", Dismiss, Some(SEARCH)),
-        KeyBinding::new("secondary-q", QuitApp, Some(SEARCH)),
+        KeyBinding::new("secondary-q", Dismiss, None),
+        KeyBinding::new("secondary-q", Dismiss, Some(SEARCH)),
+        KeyBinding::new("secondary-q", Dismiss, Some(RESULTS)),
         KeyBinding::new("space", RefreshPreview, Some(RESULTS)),
         KeyBinding::new("secondary-c", CopyResult, Some(RESULTS)),
         KeyBinding::new("secondary-c", CopyResult, Some(SEARCH)),
         KeyBinding::new("secondary-f", FocusSearch, Some(SEARCH)),
         KeyBinding::new("/", FocusSearch, Some(RESULTS)),
+        KeyBinding::new("secondary-comma", OpenSettings, None),
         KeyBinding::new("secondary-comma", OpenSettings, Some(SEARCH)),
         KeyBinding::new("secondary-comma", OpenSettings, Some(RESULTS)),
+        // macOS reports the key as "," not "comma"
+        KeyBinding::new("secondary-,", OpenSettings, None),
+        KeyBinding::new("secondary-,", OpenSettings, Some(SEARCH)),
+        KeyBinding::new("secondary-,", OpenSettings, Some(RESULTS)),
     ]);
 }
 
@@ -354,6 +393,11 @@ struct PhotoApp {
     update_line: String,
     release_url: Option<String>,
     busy: bool,
+    indexing_path: Option<PathBuf>,
+    index_live: IndexLive,
+    fetching: bool,
+    fetch_note: SharedString,
+    fetch_frac: f32,
     generation: u64,
     embedder: Arc<GemmaEmbedder>,
     focus: FocusHandle,
@@ -365,10 +409,14 @@ struct PhotoApp {
     thumb_task: Option<Task<()>>,
     index_task: Option<Task<()>>,
     _index_watch: Option<Task<()>>,
+    fetch_task: Option<Task<()>>,
+    _fetch_watch: Option<Task<()>>,
     update_task: Option<Task<()>>,
+    picker_task: Option<Task<()>>,
     _hotkey_task: Task<()>,
     _carousel_task: Task<()>,
     _subscriptions: Vec<Subscription>,
+    parked: bool,
 }
 
 impl PhotoApp {
@@ -387,9 +435,9 @@ impl PhotoApp {
         shortcut_input.update(cx, |state, cx| {
             state.replace_all(saved_shortcut, window, cx);
         });
-        query_input.focus_handle(cx).focus(window, cx);
-        window.on_window_should_close(cx, |_window, cx| {
-            cx.hide();
+        let closer = cx.weak_entity();
+        window.on_window_should_close(cx, move |_window, cx| {
+            let _ = closer.update(cx, |this, cx| this.hide_to_tray(cx));
             false
         });
 
@@ -446,10 +494,26 @@ impl PhotoApp {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await;
-                if !hotkey_pressed() {
+                let chord = hotkey_pressed();
+                let tray = menu_bar::poll_tray();
+                if !chord && tray.is_none() {
                     continue;
                 }
-                let _ = this.update_in(cx, |view, window, cx| view.present(window, cx));
+                let _ = this.update_in(cx, |view, window, cx| {
+                    if chord {
+                        view.present(window, cx);
+                        return;
+                    }
+                    match tray {
+                        Some(TrayCommand::Show) => view.present(window, cx),
+                        Some(TrayCommand::Settings) => {
+                            view.on_open_settings(&OpenSettings, window, cx);
+                            view.reveal_window(window, cx);
+                        }
+                        Some(TrayCommand::Quit) => cx.quit(),
+                        None => {}
+                    }
+                });
             }
         });
         let mut app = Self {
@@ -476,6 +540,11 @@ impl PhotoApp {
             update_line,
             release_url: None,
             busy: false,
+            indexing_path: None,
+            index_live: IndexLive::default(),
+            fetching: false,
+            fetch_note: SharedString::default(),
+            fetch_frac: 0.,
             generation: 0,
             embedder: Arc::new(GemmaEmbedder::new()),
             focus,
@@ -486,8 +555,12 @@ impl PhotoApp {
             thumb_task: None,
             index_task: None,
             _index_watch: None,
+            fetch_task: None,
+            _fetch_watch: None,
             update_task: None,
+            picker_task: None,
             welcome_carousel,
+            parked: true,
             _hotkey_task: hotkey_task,
             _carousel_task: cx.spawn(async move |this, cx| {
                 loop {
@@ -495,6 +568,9 @@ impl PhotoApp {
                         .timer(Duration::from_secs(4))
                         .await;
                     let _ = this.update(cx, |view, cx| {
+                        if view.parked {
+                            return;
+                        }
                         if matches!(view.screen, Screen::Search)
                             && view.query.trim().is_empty()
                             && view.hits.is_empty()
@@ -511,11 +587,20 @@ impl PhotoApp {
         if due {
             app.spawn_update(cx);
         }
+        app.start_model_fetch(cx);
+        if app.settings.open_at_login {
+            if let Err(err) = menu_bar::set_open_at_login(true) {
+                eprintln!("open at login: {err}");
+            }
+        }
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(500))
                 .await;
             let _ = this.update_in(cx, |view, window, _cx| {
+                if view.parked {
+                    return;
+                }
                 let vp = window.viewport_size();
                 let b = view.hits_scroll.bounds();
                 let line = format!(
@@ -535,15 +620,50 @@ impl PhotoApp {
         app
     }
 
+    fn drop_surfaces(&mut self) {
+        self.search_task = None;
+        self.preview_task = None;
+        self.thumb_task = None;
+        self.thumbs.clear();
+        self.preview = None;
+        self.preview_for = None;
+    }
+
+    fn hide_to_tray(&mut self, cx: &mut Context<Self>) {
+        self.parked = true;
+        self.generation = self.generation.wrapping_add(1);
+        self.drop_surfaces();
+        cx.hide();
+        cx.notify();
+    }
+
     fn present(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.parked = false;
         self.screen = Screen::Search;
+        self.reveal_window(window, cx);
+        self.query_input.focus_handle(cx).focus(window, cx);
+        if !self.query.trim().is_empty() {
+            if self.hits.is_empty() {
+                self.schedule_search(cx);
+            } else {
+                self.warm_thumbs(cx);
+                self.queue_side_preview(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn reveal_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.parked = false;
         cx.activate(true);
         window.activate_window();
-        self.query_input.focus_handle(cx).focus(window, cx);
         cx.notify();
     }
 
     fn schedule_search(&mut self, cx: &mut Context<Self>) {
+        if self.parked {
+            return;
+        }
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.preview_task = None;
@@ -590,11 +710,7 @@ impl PhotoApp {
                         view.notes = outcome.notes;
                         view.errors = outcome.errors;
                         view.retain_thumbs();
-                        view.status = if view.hits.is_empty() {
-                            "No matching photos.".into()
-                        } else {
-                            format!("{} photos.", view.hits.len()).into()
-                        };
+                        view.status = search_status(&view.hits, &view.notes, &view.index_line);
                     }
                     Err(err) => {
                         view.hits.clear();
@@ -617,6 +733,9 @@ impl PhotoApp {
     }
 
     fn warm_thumbs(&mut self, cx: &mut Context<Self>) {
+        if self.parked {
+            return;
+        }
         let generation = self.generation;
         let jobs: Vec<PathBuf> = self
             .hits
@@ -749,6 +868,9 @@ impl PhotoApp {
     }
 
     fn queue_side_preview(&mut self, cx: &mut Context<Self>) {
+        if self.parked {
+            return;
+        }
         let Some(hit) = self.hits.get(self.selected).cloned() else {
             self.preview = None;
             self.preview_for = None;
@@ -869,6 +991,8 @@ impl PhotoApp {
             .unwrap_or("folder")
             .to_string();
         self.busy = true;
+        self.indexing_path = Some(path.clone());
+        self.index_live = IndexLive::default();
         self.index_problem = None;
         self.index_note = format!("Indexing {folder}. Looking through the folder.").into();
         let live = Arc::new(Mutex::new(IndexLive::default()));
@@ -887,8 +1011,11 @@ impl PhotoApp {
                             return false;
                         }
                         if let Some(snap) = snap {
+                            view.index_live = snap.clone();
                             view.index_note = index_sentence(&folder_watch, &snap).into();
-                            cx.notify();
+                            if !view.parked {
+                                cx.notify();
+                            }
                         }
                         true
                     })
@@ -905,6 +1032,8 @@ impl PhotoApp {
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.busy = false;
+                view.indexing_path = None;
+                view.index_live = IndexLive::default();
                 view.index_note = SharedString::default();
                 match outcome {
                     Ok(outcome) => {
@@ -934,20 +1063,111 @@ impl PhotoApp {
         }
     }
 
-    fn add_folder(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Choose a folder of photos")
-            .pick_folder()
-        else {
-            return;
-        };
-        if let Err(err) = sources::remember(&path) {
-            self.status = err.to_string().into();
-            cx.notify();
+    fn start_model_fetch(&mut self, cx: &mut Context<Self>) {
+        if !gemma::needs_fetch() {
             return;
         }
-        self.reload_rows();
-        self.start_index(path, cx);
+        self.fetching = true;
+        self.fetch_note = "Downloading EmbeddingGemma 2…".into();
+        self.fetch_frac = 0.;
+        let live = Arc::new(Mutex::new(FetchLive::default()));
+        let watch = Arc::clone(&live);
+        self._fetch_watch = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                let snap = watch.lock().ok().map(|slot| slot.clone());
+                let keep = this
+                    .update(cx, |view, cx| {
+                        if !view.fetching {
+                            return false;
+                        }
+                        if let Some(snap) = snap {
+                            if snap.total > 0 {
+                                view.fetch_frac =
+                                    (snap.got as f32 / snap.total as f32) * 100.;
+                                view.fetch_note = format!(
+                                    "Downloading {}. {:.0} / {:.0} MB.",
+                                    snap.phase,
+                                    snap.got as f64 / 1_000_000.0,
+                                    snap.total as f64 / 1_000_000.0
+                                )
+                                .into();
+                            }
+                            if !view.parked {
+                                cx.notify();
+                            }
+                            if snap.done {
+                                return false;
+                            }
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        }));
+        self.fetch_task = Some(cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_spawn(async move { gemma::prepare_runtime(live) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.fetching = false;
+                match outcome {
+                    Ok(()) => {
+                        view.fetch_frac = 100.;
+                        view.fetch_note = "EmbeddingGemma 2 is on this Mac.".into();
+                        view.status = "Model ready.".into();
+                    }
+                    Err(err) => {
+                        view.fetch_note = format!("Could not download the model. {err}").into();
+                        view.status = "Model download failed.".into();
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn add_folder(&mut self, cx: &mut Context<Self>) {
+        self.pick_folder(None, "Choose a folder of photos", cx);
+    }
+
+    fn pick_folder_on_disk(&mut self, start: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.pick_folder(
+            Some(start),
+            "Choose a folder of photos on this disk",
+            cx,
+        );
+    }
+
+    fn pick_folder(&mut self, start: Option<std::path::PathBuf>, title: &'static str, cx: &mut Context<Self>) {
+        // NSOpenPanel runs a nested modal loop. Calling it while PhotoApp is
+        // borrowed (the click listener) lets the 100 ms hotkey timer
+        // borrow_mut the same RefCell and abort.
+        cx.activate(true);
+        self.picker_task = Some(cx.spawn(async move |this, cx| {
+            let mut dialog = rfd::FileDialog::new().set_title(title);
+            if let Some(path) = start {
+                dialog = dialog.set_directory(path);
+            }
+            let Some(path) = dialog.pick_folder() else {
+                return;
+            };
+            let _ = this.update(cx, |view, cx| {
+                if let Err(err) = sources::remember(&path) {
+                    view.status = err.to_string().into();
+                    cx.notify();
+                    return;
+                }
+                view.reload_rows();
+                view.start_index(path, cx);
+            });
+        }));
     }
 
     fn forget(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
@@ -1103,11 +1323,11 @@ impl PhotoApp {
     }
 
     fn on_quit(&mut self, _: &QuitApp, _: &mut Window, cx: &mut Context<Self>) {
-        cx.quit();
+        self.hide_to_tray(cx);
     }
 
     fn on_dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
-        cx.hide();
+        self.hide_to_tray(cx);
     }
 
     fn on_preview(&mut self, _: &RefreshPreview, _: &mut Window, cx: &mut Context<Self>) {
@@ -1129,9 +1349,42 @@ impl PhotoApp {
         cx.notify();
     }
 
-    fn on_open_settings(&mut self, _: &OpenSettings, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.parked = false;
         self.screen = Screen::Settings;
+        self.reveal_window(window, cx);
         self.reload_rows();
+        let vp = window.viewport_size();
+        let inner = Self::settings_inner_width(window);
+        let line = format!(
+            "settings viewport={:.0}x{:.0} inner={:.0}",
+            f32::from(vp.width),
+            f32::from(vp.height),
+            inner
+        );
+        note(&line);
+        let _ = std::fs::write("/tmp/loupe-layout.txt", format!("{line}\n"));
+        cx.notify();
+    }
+
+    fn set_open_at_login(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        match menu_bar::set_open_at_login(enabled) {
+            Ok(()) => {
+                self.settings.open_at_login = enabled;
+                if enabled {
+                    self.status = "Loupe will open at login.".into();
+                } else {
+                    self.status = "Loupe will stay closed until you open it.".into();
+                }
+            }
+            Err(err) => {
+                self.settings.open_at_login = menu_bar::open_at_login_installed();
+                self.status = err.to_string().into();
+            }
+        }
+        if let Err(err) = save_settings(&self.settings) {
+            self.status = err.to_string().into();
+        }
         cx.notify();
     }
 
@@ -1255,19 +1508,29 @@ impl PhotoApp {
 
     fn render_index_banner(&self, cx: &Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
+        let (note, loading, frac) = if self.fetching {
+            (
+                self.fetch_note.clone(),
+                self.fetch_frac <= 1.,
+                self.fetch_frac,
+            )
+        } else {
+            (self.index_note.clone(), true, 0.)
+        };
         div()
             .w_full()
             .h(px(INDEX_BANNER_HEIGHT))
             .px_5()
-            .border_b_1()
+            .border_t_1()
             .border_color(border)
             .bg(cx.theme().primary.opacity(0.12))
             .flex()
             .items_center()
             .gap_3()
             .child(
-                Progress::new("index-progress")
-                    .loading(true)
+                Progress::new("work-progress")
+                    .loading(loading)
+                    .value(frac)
                     .w(px(96.))
                     .color(cx.theme().primary),
             )
@@ -1275,7 +1538,7 @@ impl PhotoApp {
                 div()
                     .text_sm()
                     .text_color(cx.theme().foreground)
-                    .child(self.index_note.clone()),
+                    .child(note),
             )
     }
 
@@ -1285,10 +1548,14 @@ impl PhotoApp {
         if matches!(self.screen, Screen::Search) {
             chrome += SEARCH_BAR_HEIGHT;
         }
-        if self.busy {
+        if self.busy || self.fetching {
             chrome += INDEX_BANNER_HEIGHT;
         }
         (h - chrome).max(160.)
+    }
+
+    fn settings_inner_width(window: &Window) -> f32 {
+        (f32::from(window.viewport_size().width) - TRAFFIC_LIGHT_CLEARANCE - PAGE_INSET).max(360.)
     }
 
     fn welcome_view(
@@ -1397,7 +1664,7 @@ impl PhotoApp {
                                     .child(welcome_shortcut(
                                         &OpenSettings,
                                         SEARCH,
-                                        "secondary-comma",
+                                        "secondary-,",
                                         "Settings",
                                         window,
                                         muted,
@@ -1514,6 +1781,14 @@ impl PhotoApp {
             )
     }
 
+    fn visible_search_notes(&self) -> Vec<String> {
+        self.notes
+            .iter()
+            .filter(|note| self.hits.is_empty() || !note.contains("unplugged"))
+            .cloned()
+            .collect()
+    }
+
     fn search_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
         let work_h = self.work_height(window);
@@ -1555,8 +1830,8 @@ impl PhotoApp {
                     .mx_6()
                     .mt_3()
             }))
-            .children(self.notes.iter().enumerate().map(|(i, note)| {
-                Alert::info(("search-note", i), note.clone())
+            .children(self.visible_search_notes().into_iter().enumerate().map(|(i, note)| {
+                Alert::info(("search-note", i), note)
                     .xsmall()
                     .mx_6()
                     .mt_1()
@@ -1636,7 +1911,7 @@ impl PhotoApp {
                     .child(
                         resizable_panel()
                             .size(px(PREVIEW_WIDTH))
-                            .size_range(px(240.)..px(520.))
+                            .size_range(px(280.)..px(720.))
                             .child(self.side_pane(cx)),
                     ),
             )
@@ -1720,8 +1995,8 @@ impl PhotoApp {
             .child(
                 div()
                     .w_full()
-                    .h(px(420.))
-                    .flex_shrink_0()
+                    .flex_1()
+                    .min_h(px(360.))
                     .overflow_hidden()
                     .bg(rgb(0x0E0C0A))
                     .flex()
@@ -2099,6 +2374,8 @@ impl PhotoApp {
             .filter(|(_, row)| row.kind == DiskKind::External)
             .collect();
         let no_disks = disks.is_empty();
+        let disk_pick_root = disks.first().map(|(_, row)| row.path.clone());
+        let inner_w = Self::settings_inner_width(window);
 
         let total_photos: i64 = rows
             .iter()
@@ -2120,14 +2397,14 @@ impl PhotoApp {
             )
         };
 
-        let mut mac_list = div().id("mac-folders").flex().flex_col().gap_2();
+        let mut mac_list = v_flex().id("mac-folders").w(px(inner_w)).gap_2();
         for (index, row) in mac {
-            mac_list = mac_list.child(self.folder_row(index, row, cx));
+            mac_list = mac_list.child(self.folder_row(index, row, inner_w, cx));
         }
 
-        let mut disk_list = div().id("disk-folders").flex().flex_col().gap_2();
+        let mut disk_list = v_flex().id("disk-folders").w(px(inner_w)).gap_2();
         for (index, row) in disks {
-            disk_list = disk_list.child(self.folder_row(index, row, cx));
+            disk_list = disk_list.child(self.folder_row(index, row, inner_w, cx));
         }
 
         let shortcut = shortcut_label(&self.settings);
@@ -2135,21 +2412,26 @@ impl PhotoApp {
         let muted = cx.theme().muted_foreground;
 
         let work_h = self.work_height(window);
+        let pref_gap = 16.;
+        let col_w = ((inner_w - pref_gap) / 2.).max(240.);
         v_flex()
             .id("settings-page")
-            .w_full()
+            .w(px(f32::from(window.viewport_size().width)))
             .h(px(work_h))
             .bg(cx.theme().background)
             .child(
+                div()
+                    .id("settings-scroll")
+                    .w(px(f32::from(window.viewport_size().width)))
+                    .h(px(work_h))
+                    .overflow_y_scrollbar()
+                    .child(
                 v_flex()
                     .id("settings-body")
-                    .w_full()
-                    .h_full()
+                    .w(px(inner_w))
+                    .ml(px(TRAFFIC_LIGHT_CLEARANCE))
                     .gap_6()
-                    .pl(px(TRAFFIC_LIGHT_CLEARANCE))
-                    .pr(px(PAGE_INSET))
                     .py_6()
-                    .overflow_y_scrollbar()
                     .child(
                         v_flex()
                             .gap_1()
@@ -2171,13 +2453,12 @@ impl PhotoApp {
                         Alert::error("folders-index-problem", sentence).small()
                     }))
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
+                        v_flex()
+                            .w(px(inner_w))
                             .gap_2()
                             .child(
                                 h_flex()
-                                    .w_full()
+                                    .w(px(inner_w))
                                     .items_center()
                                     .child(
                                         h_flex()
@@ -2203,19 +2484,37 @@ impl PhotoApp {
                             .child(mac_list),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
+                        v_flex()
+                            .w(px(inner_w))
                             .gap_2()
                             .child(
                                 h_flex()
-                                    .w_full()
+                                    .w(px(inner_w))
                                     .items_center()
-                                    .gap_2()
-                                    .text_sm()
-                                    .font_semibold()
-                                    .child(IconName::HardDrive)
-                                    .child("Plugged-in disks"),
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .child(IconName::HardDrive)
+                                            .child("Plugged-in disks"),
+                                    )
+                                    .child(div().flex_1())
+                                    .children((!no_disks).then(|| {
+                                        let start = disk_pick_root.clone();
+                                        Button::new("settings-disk-folder")
+                                            .small()
+                                            .primary()
+                                            .icon(IconName::FolderPlus)
+                                            .label("Choose folder")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                match start.clone() {
+                                                    Some(path) => this.pick_folder_on_disk(path, cx),
+                                                    None => this.add_folder(cx),
+                                                }
+                                            }))
+                                    })),
                             )
                             .children(no_disks.then(|| {
                                 div()
@@ -2227,9 +2526,8 @@ impl PhotoApp {
                             .child(disk_list),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
+                        v_flex()
+                            .w(px(inner_w))
                             .gap_3()
                             .pt_2()
                             .child(
@@ -2244,10 +2542,38 @@ impl PhotoApp {
                             )
                             .child(
                                 GroupBox::new()
+                                    .id("engine-box")
+                                    .outline()
+                                    .w(px(inner_w))
+                                    .title("Model")
+                                    .child(
+                                        div().w_full().child(if self.fetching {
+                                            self.fetch_note.to_string()
+                                        } else if gemma::weights_on_disk().is_some() {
+                                            "EmbeddingGemma 2 is on this Mac. llama-server starts on the first search or index.".to_string()
+                                        } else {
+                                            "The model downloads the first time Loupe needs it. Search and index wait until that finishes.".to_string()
+                                        }),
+                                    )
+                                    .children(self.fetching.then(|| {
+                                        Progress::new("settings-fetch")
+                                            .loading(self.fetch_frac <= 1.)
+                                            .value(self.fetch_frac)
+                                            .w_full()
+                                            .color(cx.theme().primary)
+                                    })),
+                            )
+                            .child(
+                                GroupBox::new()
                                     .id("theme-box")
                                     .outline()
+                                    .w(px(inner_w))
                                     .title("Appearance")
-                                    .child("Darkroom is the default. Paper is a light table.")
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .child("Darkroom is the default. Paper is a light table."),
+                                    )
                                     .child(
                                         ToggleGroup::new("theme-mode")
                                             .segmented()
@@ -2279,16 +2605,46 @@ impl PhotoApp {
                                     ),
                             )
                             .child(
-                                div()
-                                    .flex()
-                                    .gap_4()
+                                GroupBox::new()
+                                    .id("menu-bar-box")
+                                    .outline()
+                                    .w(px(inner_w))
+                                    .title("Menu Bar")
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .child("Loupe lives as an icon in the menu bar. Closing the window, Escape, or Command-Q parks it. Quit from the menu-bar icon."),
+                                    )
+                                    .child(
+                                        Checkbox::new("open-at-login")
+                                            .label("Open at login")
+                                            .checked(self.settings.open_at_login)
+                                            .on_change(cx.listener(|this, checked, _, cx| {
+                                                this.set_open_at_login(*checked, cx);
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .items_start()
+                                    .w(px(inner_w))
+                                    .gap(px(pref_gap))
                                     .child(
                                         GroupBox::new()
                                             .id("shortcut-box")
                                             .outline()
+                                            .w(px(col_w))
                                             .title("Global Shortcut")
-                                            .child(format!("{shortcut} opens search from any app."))
-                                            .child("Use shift, ctrl, alt, and super, then any key. Letters, digits, function keys, arrows, and punctuation all work.")
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .child(format!("{shortcut} opens search from any app.")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .child("Use shift, ctrl, alt, and super, then any key. Letters, digits, function keys, arrows, and punctuation all work."),
+                                            )
                                             .child(Input::new(&self.shortcut_input))
                                             .child(div().text_xs().text_color(cx.theme().danger).child(self.shortcut_error.clone()))
                                             .child(
@@ -2303,9 +2659,14 @@ impl PhotoApp {
                                         GroupBox::new()
                                             .id("update-box")
                                             .outline()
+                                            .w(px(col_w))
                                             .title("Software Updates")
-                                            .child(format!("This copy is {APP_VERSION}. The check reads one small JSON file."))
-                                            .child(div().text_xs().text_color(muted).child(self.update_line.clone()))
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .child(format!("This copy is {APP_VERSION}. The check reads one small JSON file.")),
+                                            )
+                                            .child(div().w_full().text_xs().text_color(muted).child(self.update_line.clone()))
                                             .child(Input::new(&self.feed_input))
                                             .child(
                                                 Checkbox::new("daily-update")
@@ -2362,12 +2723,20 @@ impl PhotoApp {
                                     ),
                             ),
                     ),
+                ),
             )
     }
 
-    fn folder_row(&mut self, index: usize, row: FolderRow, cx: &mut Context<Self>) -> impl IntoElement {
+    fn folder_row(
+        &mut self,
+        index: usize,
+        row: FolderRow,
+        row_w: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let path = row.path.clone();
         let index_path = path.clone();
+        let disk_folder_path = path.clone();
         let forget_path = path.clone();
         let reveal_path_val = path.clone();
         let title = folder_title(&row);
@@ -2376,25 +2745,43 @@ impl PhotoApp {
         let indexed = matches!(row.index, IndexState::Ready { .. });
         let connected = !matches!(row.index, IndexState::NotConnected);
         let remembered = row.remembered;
-        let action = if indexed { "Update" } else { "Index" };
+        let underway = self.indexing_path.as_ref() == Some(&path);
+        let action = if underway {
+            "Indexing…"
+        } else if indexed {
+            "Update"
+        } else {
+            "Index"
+        };
         let muted = cx.theme().muted_foreground;
         let is_external = row.kind == DiskKind::External;
-        let pip = match &row.index {
-            IndexState::Ready { .. } => cx.theme().primary,
-            IndexState::Unreadable(_) => cx.theme().danger,
-            _ => cx.theme().muted_foreground.opacity(0.35),
+        let pip = if underway {
+            cx.theme().warning
+        } else {
+            match &row.index {
+                IndexState::Ready { .. } => cx.theme().primary,
+                IndexState::Unreadable(_) => cx.theme().danger,
+                _ => cx.theme().muted_foreground.opacity(0.35),
+            }
         };
 
-        let status_tag = match &row.index {
-            IndexState::Ready { photos, .. } => Tag::secondary().child(format!("{photos} photos")),
-            IndexState::NoIndex => Tag::secondary().child("no index"),
-            IndexState::NotConnected => Tag::secondary().child("unplugged"),
-            IndexState::Unreadable(_) => Tag::danger().child("unreadable"),
+        let status_tag = if underway {
+            Tag::warning().child("indexing")
+        } else {
+            match &row.index {
+                IndexState::Ready { photos, .. } => {
+                    Tag::secondary().child(format!("{photos} photos"))
+                }
+                IndexState::NoIndex => Tag::secondary().child("no index"),
+                IndexState::NotConnected => Tag::secondary().child("unplugged"),
+                IndexState::Unreadable(_) => Tag::danger().child("unreadable"),
+            }
         };
+        let live_line = underway.then(|| index_sentence(&title, &self.index_live));
 
         h_flex()
             .id(("folder", index))
-            .w_full()
+            .w(px(row_w))
             .items_center()
             .gap_4()
             .py_3()
@@ -2405,7 +2792,6 @@ impl PhotoApp {
                     .items_start()
                     .gap_3()
                     .min_w(px(0.))
-                    .flex_1()
                     .child(
                         div()
                             .mt_1()
@@ -2455,9 +2841,27 @@ impl PhotoApp {
                                     .text_xs()
                                     .text_color(muted.opacity(0.8))
                                     .child(hint),
-                            ),
+                            )
+                            .children(live_line.map(|line| {
+                                v_flex()
+                                    .gap_1()
+                                    .pt_1()
+                                    .child(
+                                        Progress::new(("index-row", index))
+                                            .loading(true)
+                                            .w(px(160.))
+                                            .color(cx.theme().warning),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().warning)
+                                            .child(line),
+                                    )
+                            })),
                     ),
             )
+            .child(div().flex_1())
             .child(
                 h_flex()
                     .items_center()
@@ -2466,15 +2870,28 @@ impl PhotoApp {
                     .children(connected.then(|| {
                         Button::new(SharedString::from(format!("index-{index}")))
                             .small()
-                            .with_variant(if indexed {
+                            .with_variant(if underway {
+                                ButtonVariant::Secondary
+                            } else if indexed {
                                 ButtonVariant::Secondary
                             } else {
                                 ButtonVariant::Primary
                             })
                             .icon(IconName::RefreshCw)
                             .label(action)
+                            .disabled(underway)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.start_index(index_path.clone(), cx);
+                            }))
+                    }))
+                    .children((is_external && connected && !remembered).then(|| {
+                        Button::new(SharedString::from(format!("disk-folder-{index}")))
+                            .small()
+                            .ghost()
+                            .icon(IconName::FolderPlus)
+                            .tooltip("Choose a folder on this disk")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.pick_folder_on_disk(disk_folder_path.clone(), cx);
                             }))
                     }))
                     .children((!is_external && connected).then(|| {
@@ -2506,7 +2923,7 @@ impl PhotoApp {
 impl Render for PhotoApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let top_bar = self.render_top_bar(window, cx);
-        let banner = (self.busy).then(|| self.render_index_banner(cx));
+        let banner = (self.busy || self.fetching).then(|| self.render_index_banner(cx));
         let body: AnyElement = match self.screen {
             Screen::Settings => self.folders_page(window, cx).into_any_element(),
             Screen::Search => self.search_page(window, cx).into_any_element(),
@@ -2535,8 +2952,8 @@ impl Render for PhotoApp {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(top_bar)
-            .children(banner)
             .child(body)
+            .children(banner)
             .child(bottom_bar)
     }
 }
@@ -2592,7 +3009,10 @@ fn folder_hint(row: &FolderRow) -> String {
         IndexState::Ready { .. } if row.remembered => "Search includes this folder.",
         IndexState::Ready { .. } => "Included because an index is already here.",
         IndexState::NoIndex if row.kind == DiskKind::External => {
-            "Index writes the catalog on this disk."
+            "Index the whole disk, or choose a folder on it. The catalog is a hidden .photo_index folder."
+        }
+        IndexState::NoIndex if pictures_holds_photos_app(&row.path) => {
+            "Index covers files sitting in this folder. The Photos app library is a package and is not scanned."
         }
         IndexState::NoIndex => "Index writes the catalog in this folder.",
         IndexState::NotConnected => "Plug it in to search the index on the disk.",
@@ -2603,6 +3023,24 @@ fn folder_hint(row: &FolderRow) -> String {
         (DiskKind::External, DiskMedium::Ssd) => format!("{line} Solid-state disk."),
         _ => line.to_string(),
     }
+}
+
+fn pictures_holds_photos_app(path: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .map(|name| {
+                let lower = name.to_ascii_lowercase();
+                lower.ends_with(".photoslibrary")
+                    || lower.ends_with(".photolibrary")
+                    || lower.ends_with(".migratedphotolibrary")
+            })
+            .unwrap_or(false)
+    })
 }
 
 fn short_path(path: &std::path::Path) -> String {
@@ -2706,6 +3144,14 @@ fn search_hint(
                         .flex()
                         .items_center()
                         .gap_1()
+                        .child(key_chip(&OpenSettings, SEARCH, "secondary-,", window))
+                        .child("settings"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
                         .child(key_chip(&MoveLeft, SEARCH, "←", window))
                         .child(key_chip(&MoveRight, SEARCH, "→", window))
                         .child(key_chip(&MoveUp, SEARCH, "↑", window))
@@ -2750,6 +3196,7 @@ fn search_hint(
                         .items_center()
                         .gap_1()
                         .child(key_chip(&Dismiss, SEARCH, "escape", window))
+                        .child(key_chip(&Dismiss, SEARCH, "secondary-q", window))
                         .child("hide"),
                 ),
         )
@@ -2780,6 +3227,38 @@ fn key_chip(action: &dyn Action, context: &str, fallback: &str, window: &Window)
     }
 }
 
+fn search_status(hits: &[RankedHit], notes: &[String], index_line: &str) -> SharedString {
+    let unplugged = notes
+        .iter()
+        .find(|note| note.contains("unplugged"))
+        .cloned()
+        .or_else(|| {
+            index_line
+                .contains("unplugged")
+                .then(|| index_line.to_string())
+        });
+    if hits.is_empty() {
+        if let Some(note) = unplugged {
+            if note.contains("still") {
+                return note.into();
+            }
+            return format!("{note} Other folders still search.").into();
+        }
+        return "No matching photos.".into();
+    }
+    match unplugged {
+        Some(note) => {
+            let short = note
+                .split(". ")
+                .next()
+                .unwrap_or(note.as_str())
+                .trim_end_matches('.');
+            format!("{} photos. {short}.", hits.len()).into()
+        }
+        None => format!("{} photos.", hits.len()).into(),
+    }
+}
+
 struct SheetMetrics {
     cols: usize,
     tile_w: f32,
@@ -2793,15 +3272,9 @@ impl SheetMetrics {
         } else {
             (width - SHEET_PAD).max(SHEET_MIN_INNER)
         };
-        let cols = if inner >= 1100. {
-            4
-        } else if inner >= 620. {
-            3
-        } else {
-            2
-        };
+        let cols = if inner >= 420. { 2 } else { 1 };
         let tile_w = ((inner - TILE_GAP * (cols as f32 - 1.)) / cols as f32).floor();
-        let tile_h = (tile_w * 0.72).floor().clamp(176., 320.);
+        let tile_h = (tile_w * 0.78).floor().clamp(200., 400.);
         Self {
             cols,
             tile_w,

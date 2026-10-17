@@ -27,6 +27,9 @@ pub fn search_catalogs(
     limit: usize,
 ) -> Result<(ParsedQuery, Vec<RankedHit>, Vec<String>)> {
     let parsed = ParsedQuery::parse(query);
+    if set.catalogs.is_empty() {
+        return Ok((parsed, Vec::new(), Vec::new()));
+    }
     let query_vec = embedder.embed_text(&parsed.semantic_prompt)?;
     let mut ranked = Vec::new();
     let mut errors = Vec::new();
@@ -95,8 +98,16 @@ pub fn print_results(
     println!("{summary}");
 
     if set.catalogs.is_empty() {
-        println!("no indexes to search");
-        println!("index a folder on this Mac, or connect a disk that already has .photo_index");
+        let unplugged = set.notes.iter().any(|note| note.status == "not connected");
+        if unplugged {
+            println!("a disk is unplugged; folders on this Mac are still searchable");
+        } else {
+            println!("no indexes to search");
+            println!("index a folder on this Mac, or connect a disk that already has .photo_index");
+        }
+        for note in &set.notes {
+            eprintln!("{}  {}", note.status, note.path.display());
+        }
         return;
     }
 
