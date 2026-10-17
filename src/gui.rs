@@ -48,6 +48,7 @@ actions!(
         TogglePreview,
         CopyResult,
         QuitApp,
+        FocusSearch,
     ]
 );
 
@@ -55,6 +56,12 @@ const SEARCH: &str = "PhotoSearch";
 const RESULTS: &str = "PhotoResults";
 const PRODUCT: &str = "Loupe";
 const WORDMARK_FONT: &str = "Baskerville";
+const SEARCH_LIMIT: usize = 48;
+/// Left inset that clears the traffic lights and lines up with the wordmark.
+const TITLE_INSET: f32 = 80.;
+const PAGE_INSET: f32 = 20.;
+const TILE_GAP: f32 = 12.;
+const SHEET_PAD: f32 = 24.;
 
 thread_local! {
     static HOTKEYS: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
@@ -203,6 +210,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("space", TogglePreview, Some(RESULTS)),
         KeyBinding::new("secondary-c", CopyResult, Some(RESULTS)),
         KeyBinding::new("secondary-c", CopyResult, Some(SEARCH)),
+        KeyBinding::new("secondary-f", FocusSearch, Some(SEARCH)),
+        KeyBinding::new("/", FocusSearch, Some(RESULTS)),
     ]);
 }
 
@@ -251,7 +260,7 @@ impl PhotoApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = app_model::load_settings();
         let query_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("a wet street at night, 35mm")
+            InputState::new(window, cx).placeholder("what the photograph showed")
         });
         let feed_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("https://example.com/loupe.json")
@@ -403,7 +412,7 @@ impl PhotoApp {
                 return;
             }
             let outcome = cx
-                .background_spawn(async move { search_photos(embedder.as_ref(), &query, 20) })
+                .background_spawn(async move { search_photos(embedder.as_ref(), &query, SEARCH_LIMIT) })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 if view.generation != generation {
@@ -508,13 +517,28 @@ impl PhotoApp {
         if !self.grid {
             return 1;
         }
+        self.sheet_metrics().0 as isize
+    }
+
+    /// Columns and print size for the contact sheet. Falls back to three
+    /// large prints before the sheet has a layout width.
+    fn sheet_metrics(&self) -> (usize, f32, f32) {
         let width = f32::from(self.hits_scroll.bounds().size.width);
-        if width < 160. {
-            return 1;
-        }
-        // 216px tile, 8px gap, 12px padding on each side of the sheet (24px total padding).
-        let inner = (width - 24.).max(216.);
-        (((inner + 8.) / 224.).floor() as isize).max(1)
+        let inner = if width < 80. {
+            880.
+        } else {
+            (width - SHEET_PAD).max(300.)
+        };
+        let cols = if inner >= 1100. {
+            4
+        } else if inner >= 620. {
+            3
+        } else {
+            2
+        };
+        let tile_w = ((inner - TILE_GAP * (cols as f32 - 1.)) / cols as f32).floor();
+        let tile_h = (tile_w * 0.72).floor().clamp(176., 320.);
+        (cols, tile_w, tile_h)
     }
 
     /// One row up or down, using the laid-out tiles. Before the first layout,
@@ -954,6 +978,17 @@ impl PhotoApp {
         self.copy_selected(cx);
     }
 
+    fn on_focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.screen, Screen::Search) {
+            self.screen = Screen::Search;
+        }
+        self.query_input.focus_handle(cx).focus(window, cx);
+        self.query_input.update(cx, |state, cx| {
+            state.select_all(window, cx);
+        });
+        cx.notify();
+    }
+
     fn apply_query(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = text.to_string();
         self.query = text.clone();
@@ -1000,8 +1035,8 @@ impl PhotoApp {
             .border_b_1()
             .border_color(border)
             .bg(cx.theme().background)
-            .pl(px(80.))
-            .pr_5()
+            .pl(px(TITLE_INSET))
+            .pr(px(PAGE_INSET))
             .flex()
             .items_center()
             .justify_between()
@@ -1142,12 +1177,13 @@ impl PhotoApp {
 
         div()
             .flex_1()
+            .w_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
             .p_8()
-            .gap_5()
+            .gap_6()
             .child(
                 div()
                     .font_family(WORDMARK_FONT)
@@ -1158,16 +1194,16 @@ impl PhotoApp {
             )
             .child(
                 div()
+                    .w(px(432.))
                     .flex()
                     .flex_wrap()
-                    .justify_center()
                     .gap_2()
-                    .max_w(px(560.))
                     .children(SUGGESTED_QUERIES.iter().map(|&suggestion| {
                         Button::new(SharedString::from(format!("welcome-{suggestion}")))
                             .small()
                             .ghost()
                             .label(suggestion)
+                            .w(px(212.))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.apply_query(suggestion, window, cx);
                             }))
@@ -1199,6 +1235,7 @@ impl PhotoApp {
         let muted_fg = cx.theme().muted_foreground;
         div()
             .flex_1()
+            .w_full()
             .flex()
             .flex_col()
             .items_center()
@@ -1242,35 +1279,26 @@ impl PhotoApp {
 
         let search_bar = div()
             .w_full()
-            .px_5()
+            .pl(px(TITLE_INSET))
+            .pr(px(PAGE_INSET))
             .py_3()
             .border_b_1()
             .border_color(border)
             .bg(cx.theme().background)
             .flex()
             .items_center()
-            .gap_2()
             .child(
                 div()
                     .flex_1()
                     .child(Input::new(&self.query_input).cleanable(true)),
-            )
-            .children((!self.query.trim().is_empty()).then(|| {
-                Button::new("clear-search-btn")
-                    .small()
-                    .ghost()
-                    .icon(IconName::X)
-                    .tooltip("Clear")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.clear_query(window, cx);
-                    }))
-            }));
+            );
 
         let list_content: AnyElement = if is_empty_query && !has_hits {
             self.welcome_view(cx).into_any_element()
         } else if !is_empty_query && !has_hits && !self.busy {
             self.no_results_view(cx).into_any_element()
         } else {
+            let (_, tile_w, tile_h) = self.sheet_metrics();
             let mut list = div()
                 .id("hits")
                 .track_focus(&self.results_focus)
@@ -1278,16 +1306,22 @@ impl PhotoApp {
                 .key_context(RESULTS)
                 .on_action(cx.listener(Self::on_preview))
                 .on_action(cx.listener(Self::on_copy))
+                .on_action(cx.listener(Self::on_focus_search))
                 .flex_1()
+                .w_full()
                 .min_w(px(0.))
                 .min_h(px(0.))
                 .overflow_y_scroll()
                 .p_3();
 
             if grid {
-                list = list.flex().flex_wrap().content_start().gap_2();
+                list = list
+                    .flex()
+                    .flex_wrap()
+                    .content_start()
+                    .gap(px(TILE_GAP));
                 for (index, hit) in hits.into_iter().enumerate() {
-                    list = list.child(self.tile(index, hit, selected == index, cx));
+                    list = list.child(self.tile(index, hit, selected == index, tile_w, tile_h, cx));
                 }
             } else {
                 list = list.flex().flex_col().gap_2();
@@ -1300,6 +1334,7 @@ impl PhotoApp {
                 .flex_1()
                 .min_h(px(0.))
                 .min_w(px(0.))
+                .w_full()
                 .flex()
                 .overflow_hidden()
                 .child(
@@ -1347,7 +1382,9 @@ impl PhotoApp {
                     .flex_1()
                     .min_h(px(0.))
                     .min_w(px(0.))
+                    .w_full()
                     .flex()
+                    .flex_col()
                     .child(list_content),
             )
     }
@@ -1397,7 +1434,7 @@ impl PhotoApp {
             .child(
                 div()
                     .w_full()
-                    .h(px(280.))
+                    .h(px(420.))
                     .flex_shrink_0()
                     .overflow_hidden()
                     .bg(rgb(0x0E0C0A))
@@ -1597,7 +1634,7 @@ impl PhotoApp {
             })
             .bg(bg)
             .hover(|s| s.bg(cx.theme().accent))
-            .child(thumb_box(thumb.as_deref(), 48., 48., cx))
+            .child(thumb_box(thumb.as_deref(), 96., 72., cx))
             .child(
                 div()
                     .flex_1()
@@ -1679,6 +1716,8 @@ impl PhotoApp {
         index: usize,
         hit: RankedHit,
         selected: bool,
+        tile_w: f32,
+        tile_h: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let name = file_name(&hit);
@@ -1703,14 +1742,15 @@ impl PhotoApp {
 
         div()
             .id(("tile", index))
-            .w(px(216.))
+            .w(px(tile_w))
+            .flex_shrink_0()
             .flex()
             .flex_col()
             .gap_1()
             .child(
                 div()
                     .w_full()
-                    .h(px(156.))
+                    .h(px(tile_h))
                     .overflow_hidden()
                     .border_2()
                     .border_color(border_color)
@@ -2184,6 +2224,7 @@ impl Render for PhotoApp {
             .on_action(cx.listener(Self::on_dismiss))
             .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_copy))
+            .on_action(cx.listener(Self::on_focus_search))
             .size_full()
             .flex()
             .flex_col()
@@ -2365,7 +2406,8 @@ fn search_hint(
         .flex()
         .items_center()
         .justify_between()
-        .px_5()
+        .pl(px(TITLE_INSET))
+        .pr(px(PAGE_INSET))
         .py_1_5()
         .border_t_1()
         .border_color(cx.theme().border)
@@ -2378,6 +2420,14 @@ fn search_hint(
                 .flex()
                 .items_center()
                 .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(key_chip(&FocusSearch, SEARCH, "secondary-f", window))
+                        .child("search"),
+                )
                 .child(
                     div()
                         .flex()
