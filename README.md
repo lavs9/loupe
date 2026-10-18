@@ -128,6 +128,7 @@ cargo build --features gui          # CLI + window
 ./scripts/dev-gui.sh                # local window, isolated state (loupe-dev)
 ./scripts/reset-user.sh             # wipe packaged-app state for a first-launch test
 ./scripts/e2e.sh
+./scripts/e2e-audio.sh              # 120 s song must index (LiteRT 1024-token cap)
 ./scripts/e2e-gui.sh
 ./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-<version>.dmg + dist/Loupe.dmg
 ```

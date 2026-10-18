@@ -983,6 +983,7 @@ pub fn print_self_check() -> Result<()> {
     println!("feed-older {}", feed_tag(&older));
     let bad = interpret_feed("not json", APP_VERSION);
     println!("feed-bad {}", feed_tag(&bad));
+    crate::gemma::print_audio_cap()?;
 
     for row in folder_rows()? {
         let kind = match row.kind {

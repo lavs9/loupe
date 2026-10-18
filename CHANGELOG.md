@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-18
+
+### Fixed
+- Songs longer than ~41 seconds were skipped. The embedder only takes 1024 tokens (about 30 seconds of audio). Loupe now sends the start of the track.
+
 ## [0.2.0] - 2026-10-18
 
 ### Added
