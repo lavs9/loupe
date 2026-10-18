@@ -34,7 +34,7 @@ use crate::vfs::PhotoSearchVfs;
 #[command(about = "Search photos on this Mac and on disks you plug in")]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -103,15 +103,17 @@ enum SourceAction {
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
+    // Finder / a .pkg double-click runs the binary with no subcommand.
     match cli.command {
-        Commands::Gui { self_check } => {
+        None => open_gui(),
+        Some(Commands::Gui { self_check }) => {
             if self_check {
                 app_model::print_self_check()
             } else {
                 open_gui()
             }
         }
-        command => {
+        Some(command) => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;

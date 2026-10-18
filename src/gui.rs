@@ -137,8 +137,8 @@ pub fn run() -> Result<()> {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(860.), px(560.))),
             window_background: WindowBackgroundAppearance::Opaque,
-            focus: false,
-            show: false,
+            focus: true,
+            show: true,
             ..TitleBar::window_options()
         };
         match open_window(options, cx, |window, cx| {
@@ -560,7 +560,7 @@ impl PhotoApp {
             update_task: None,
             picker_task: None,
             welcome_carousel,
-            parked: true,
+            parked: false,
             _hotkey_task: hotkey_task,
             _carousel_task: cx.spawn(async move |this, cx| {
                 loop {
@@ -1545,10 +1545,10 @@ impl PhotoApp {
     fn work_height(&self, window: &Window) -> f32 {
         let h = f32::from(window.viewport_size().height);
         let mut chrome = TITLE_CHROME + STATUS_BAR_HEIGHT;
-        if matches!(self.screen, Screen::Search) {
+        if matches!(self.screen, Screen::Search) && !self.fetching {
             chrome += SEARCH_BAR_HEIGHT;
         }
-        if self.busy || self.fetching {
+        if self.busy || (self.fetching && matches!(self.screen, Screen::Settings)) {
             chrome += INDEX_BANNER_HEIGHT;
         }
         (h - chrome).max(160.)
@@ -1556,6 +1556,70 @@ impl PhotoApp {
 
     fn settings_inner_width(window: &Window) -> f32 {
         (f32::from(window.viewport_size().width) - TRAFFIC_LIGHT_CLEARANCE - PAGE_INSET).max(360.)
+    }
+
+    fn first_launch_view(&self, work_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        v_flex()
+            .id("first-launch")
+            .w_full()
+            .h(px(work_h))
+            .child(
+                EmptyState::new()
+                    .h_full()
+                    .w_full()
+                    .header(
+                        EmptyHeader::new()
+                            .media(
+                                EmptyMedia::new()
+                                    .with_variant(EmptyMediaVariant::Icon)
+                                    .child(IconName::Sparkles),
+                            )
+                            .title(
+                                EmptyTitle::new()
+                                    .font_family(WORDMARK_FONT)
+                                    .italic()
+                                    .text_lg()
+                                    .child("Downloading the on-device model"),
+                            )
+                            .description(
+                                EmptyDescription::new().child(
+                                    "About 865 MB, once. You can hide this window. Loupe stays in the menu bar — come back when the download finishes.",
+                                ),
+                            ),
+                    )
+                    .content(
+                        EmptyContent::new()
+                            .child(
+                                v_flex()
+                                    .gap_3()
+                                    .w(px(360.))
+                                    .items_center()
+                                    .child(
+                                        Progress::new("first-fetch")
+                                            .loading(self.fetch_frac <= 1.)
+                                            .value(self.fetch_frac)
+                                            .w_full()
+                                            .color(cx.theme().primary),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(muted)
+                                            .child(self.fetch_note.clone()),
+                                    )
+                                    .child(
+                                        Button::new("first-hide")
+                                            .small()
+                                            .ghost()
+                                            .label("Hide to menu bar")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.hide_to_tray(cx);
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
     }
 
     fn welcome_view(
@@ -1794,6 +1858,14 @@ impl PhotoApp {
         let work_h = self.work_height(window);
         let has_hits = !self.hits.is_empty();
         let is_empty_query = self.query.trim().is_empty();
+
+        if self.fetching {
+            return v_flex()
+                .id("search-page")
+                .w_full()
+                .bg(cx.theme().background)
+                .child(self.first_launch_view(work_h, cx));
+        }
 
         let search_bar = h_flex()
             .id("search-bar")
@@ -2552,7 +2624,7 @@ impl PhotoApp {
                                         } else if gemma::weights_on_disk().is_some() {
                                             "EmbeddingGemma 2 is on this Mac. llama-server starts on the first search or index.".to_string()
                                         } else {
-                                            "The model downloads the first time Loupe needs it. Search and index wait until that finishes.".to_string()
+                                            "The model downloads on first launch (~865 MB). You can hide the window; Loupe stays in the menu bar.".to_string()
                                         }),
                                     )
                                     .children(self.fetching.then(|| {
@@ -2923,7 +2995,8 @@ impl PhotoApp {
 impl Render for PhotoApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let top_bar = self.render_top_bar(window, cx);
-        let banner = (self.busy || self.fetching).then(|| self.render_index_banner(cx));
+        let banner = (self.busy || (self.fetching && matches!(self.screen, Screen::Settings)))
+            .then(|| self.render_index_banner(cx));
         let body: AnyElement = match self.screen {
             Screen::Settings => self.folders_page(window, cx).into_any_element(),
             Screen::Search => self.search_page(window, cx).into_any_element(),
