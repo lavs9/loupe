@@ -30,6 +30,7 @@ BUNDLE_ID="app.loupe.gui"
 DIST="$PWD/dist"
 APP="$DIST/$APP_NAME.app"
 DMG="$DIST/$APP_NAME-$VERSION.dmg"
+STABLE_DMG="$DIST/$APP_NAME.dmg"
 PKG="$DIST/$APP_NAME-$VERSION.pkg"
 
 echo "building $APP_NAME $VERSION"
@@ -80,12 +81,13 @@ ditto "$APP" "$STAGE/$APP_NAME.app"
 ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG"
 hdiutil create \
-  -volname "Loupe" \
+  -volname "Install Loupe" \
   -srcfolder "$STAGE" \
   -ov \
   -format UDZO \
   -imagekey zlib-level=9 \
   "$DMG"
+cp -f "$DMG" "$STABLE_DMG"
 rm -rf "$STAGE"
 
 if [[ "$WANT_PKG" -eq 1 ]]; then
@@ -110,6 +112,7 @@ fi
 
 echo "app $APP"
 echo "dmg $DMG"
+echo "dmg-latest $STABLE_DMG"
 [[ -f "$PKG" ]] && echo "pkg $PKG"
 if [[ "$SIGN" -eq 0 ]]; then
   echo "unsigned: open the dmg, drag Loupe to Applications, right-click Open."
