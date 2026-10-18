@@ -2,23 +2,23 @@
 
 Internal notes. Not on the public site. Later embedders are GitHub issues, not landing-page copy.
 
-Loupe searches photos with a **multimodal embedding** model: a photo and a sentence land in the same vector space. This is not a chat model. Weights are hundreds of megabytes, not tens of gigabytes. Unified memory on Apple Silicon still matters while indexing, because llama.cpp, image decode, and macOS share the same pool.
+Loupe searches photos with a **multimodal embedding** model: a photo, a clip, a song, and a sentence land in the same vector space. This is not a chat model. Weights are hundreds of megabytes, not tens of gigabytes. Unified memory on Apple Silicon still matters while indexing, because LiteRT, decode, and macOS share the same pool.
 
 Catalogs are tied to the model id in `.photo_index/config.toml`. A disk indexed with EmbeddingGemma 2 is searched with EmbeddingGemma 2. Mixing models means a re-index of that folder. That is why the **default is one model that fits a 16 GB Mac**, so every HDD stays portable.
 
 ## What ships today
 
-**EmbeddingGemma 2 Q8** (`embeddinggemma-2-q8-256`). Apache 2.0. Text GGUF ~310 MB + vision mmproj ~555 MB. Vectors stored at 256 dimensions (Matryoshka from 768). llama.cpp b11642.
+**EmbeddingGemma 2 740M LiteRT** (`embeddinggemma-2-litert-740m-256`). Apache 2.0. One `.litertlm` (~485 MB) plus the LiteRT dylib (~138 MB unpacked). Vectors stored at 256 dimensions (Matryoshka from 768). Google AI Edge LiteRT-LM v0.18.0.
 
-Peak unified memory while embedding is about **2 GB** on top of macOS. A 16 GB Mac has room.
+Peak unified memory while embedding is about **0.5–2 GB** on top of macOS. A 16 GB Mac has room.
 
 ## Pick by RAM
 
 | Unified memory | Recommendation | Why |
 |---|---|---|
-| **16 GB** | EmbeddingGemma 2 **Q8** (default) | Fits. Index in the background; close other 4K editors if the fans come on. Q4 is only for a machine that is already swapping. |
-| **24 GB** | EmbeddingGemma 2 **Q8** | Same model, so disks from a 16 GB Mac still search. Headroom for a 100k library and a browser. |
-| **32 GB** | EmbeddingGemma 2 **Q8** still the portable default | Extra RAM helps decode and batch, not a different catalog. A larger vision embedder is optional later and **re-indexes that disk**. |
+| **16 GB** | EmbeddingGemma 2 **740M LiteRT** (default) | Fits. Index in the background; close other 4K editors if the fans come on. |
+| **24 GB** | EmbeddingGemma 2 **740M LiteRT** | Same model, so disks from a 16 GB Mac still search. Headroom for a 100k library and a browser. |
+| **32 GB** | EmbeddingGemma 2 **740M LiteRT** still the portable default | Extra RAM helps decode and batch, not a different catalog. A larger vision embedder is optional later and **re-indexes that disk**. |
 
 Do not put a 2B vision embedder on a 16 GB Mac as the default. It would win some photo benchmarks and lose the “plug this HDD into any Loupe Mac” rule.
 
@@ -41,11 +41,11 @@ Chat models (Gemma 4, Qwen3, Llama) are the wrong tool. They generate words. Lou
 ## Rule we will keep
 
 1. Detect unified memory (`hw.memsize`) and recommend, not auto-switch, unless the user picks a model in Settings.
-2. The **portable** choice is always EmbeddingGemma 2 Q8, so an HDD indexed on a 16 GB machine opens on a 32 GB machine.
+2. The **portable** choice is always EmbeddingGemma 2 740M LiteRT, so an HDD indexed on a 16 GB machine opens on a 32 GB machine.
 3. A “Quality” model on 32 GB is opt-in per folder. That folder’s `.photo_index` stays on that model until they re-index.
 
 ## Sources
 
-- [EmbeddingGemma 2](https://blog.google/innovation-and-ai/technology/developers-tools/embeddinggemma-2/) — 740M, ~567 MB full multimodal on device, MRL 768→128, Apache 2.0
-- ggml-org GGUFs: `embeddinggemma-2-Q8_0.gguf` + `mmproj-embeddinggemma-2-Q8_0.gguf`
+- [EmbeddingGemma 2](https://blog.google/innovation-and-ai/technology/developers-tools/embeddinggemma-2/) — 740M, ~485 MB LiteRT omnimodal, MRL 768→128, Apache 2.0
+- litert-community: `embeddinggemma-2-740m.litertlm` + LiteRT-LM `CLiteRTLM_mac.xcframework` v0.18.0
 - Qwen3-VL-Embedding 2B and jina-embeddings-v5-omni as published open weights, 2026

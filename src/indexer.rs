@@ -10,6 +10,7 @@ use std::time::UNIX_EPOCH;
 use tracing::{info, warn};
 
 use crate::db::{CatalogDb, ExifRecord};
+use crate::documents;
 use crate::embedder::{decode_image, MultimodalEmbedder, MODEL_ID};
 
 #[derive(Debug, Clone, Default)]
@@ -84,13 +85,10 @@ pub fn run_incremental_index(
         .unwrap_or_default();
 
     info!("Scanning directory {:?} for media assets...", scan_root);
+    // A model swap rebuilds into a fresh catalog, then replaces this one.
+    // This scan only skips unchanged rows when the catalog is already on
+    // the current model.
     let reembed = db.model_mismatch(embedder.model_version())?;
-    if reembed {
-        info!(
-            "Catalog was built with a different model. Re-embedding into {}.",
-            embedder.model_version()
-        );
-    }
 
     let mut report = IndexReport::default();
     let mut seen = HashSet::new();
@@ -114,7 +112,7 @@ pub fn run_incremental_index(
         if !path.is_file() {
             continue;
         }
-        let Some(mime) = classify_media_extension(&path) else {
+        let Some(mime) = documents::mime_for_path(&path) else {
             continue;
         };
         let Ok(rel) = path.strip_prefix(drive_root) else {
@@ -165,26 +163,55 @@ pub fn run_incremental_index(
             continue;
         }
 
-        let exif = extract_exif(&path).unwrap_or_default();
-        let decoded = decode_image(&path);
-        if let Some(image) = &decoded {
+        let (embedding, preview, fts_body, exif) = if documents::is_still(mime) {
+            let exif = extract_exif(&path).unwrap_or_default();
+            let decoded = decode_image(&path);
+            let embedding = match embedder.embed_image(&path) {
+                Ok(Some(embedding)) => embedding,
+                Ok(None) => {
+                    warn!("skip {rel_path}: no decodable image");
+                    emit(tick, &report, &rel_path);
+                    continue;
+                }
+                Err(err) if access_blocked(&err) => {
+                    warn!("skip {rel_path}: {err}");
+                    report.skipped += 1;
+                    emit(tick, &report, &rel_path);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            (embedding, decoded, String::new(), exif)
+        } else {
+            match documents::prepare(&path, mime, embedder) {
+                Ok(Some(prepared)) => (
+                    prepared.embedding,
+                    prepared.preview,
+                    prepared.fts,
+                    ExifRecord::default(),
+                ),
+                Ok(None) => {
+                    warn!("skip {rel_path}: nothing to index");
+                    emit(tick, &report, &rel_path);
+                    continue;
+                }
+                Err(err) if access_blocked(&err) => {
+                    warn!("skip {rel_path}: {err}");
+                    report.skipped += 1;
+                    emit(tick, &report, &rel_path);
+                    continue;
+                }
+                Err(err) => {
+                    warn!("skip {rel_path}: {err}");
+                    report.skipped += 1;
+                    emit(tick, &report, &rel_path);
+                    continue;
+                }
+            }
+        };
+        if let Some(image) = &preview {
             save_preview(drive_root, &blake3_hash, image);
         }
-        let embedding = match embedder.embed_image(&path) {
-            Ok(Some(embedding)) => embedding,
-            Ok(None) => {
-                warn!("skip {rel_path}: no decodable image");
-                emit(tick, &report, &rel_path);
-                continue;
-            }
-            Err(err) if access_blocked(&err) => {
-                warn!("skip {rel_path}: {err}");
-                report.skipped += 1;
-                emit(tick, &report, &rel_path);
-                continue;
-            }
-            Err(err) => return Err(err),
-        };
 
         db.insert_full_asset(
             &blake3_hash,
@@ -195,6 +222,7 @@ pub fn run_incremental_index(
             embedder.model_version(),
             &exif,
             &embedding,
+            &fts_body,
         )?;
 
         report.embedded += 1;
@@ -281,28 +309,6 @@ pub fn path_is_catalog_noise(path: &Path) -> bool {
             Some(".photo_index" | "Search" | ".DS_Store")
         )
     })
-}
-
-fn classify_media_extension(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "tif" | "tiff" => Some("image/tiff"),
-        "webp" => Some("image/webp"),
-        "gif" => Some("image/gif"),
-        "heic" | "heif" => Some("image/heic"),
-        "avif" => Some("image/avif"),
-        "nef" => Some("image/x-nikon-nef"),
-        "arw" => Some("image/x-sony-arw"),
-        "cr2" | "cr3" => Some("image/x-canon-cr3"),
-        "dng" => Some("image/x-adobe-dng"),
-        "raf" => Some("image/x-fuji-raf"),
-        "orf" => Some("image/x-olympus-orf"),
-        "rw2" => Some("image/x-panasonic-rw2"),
-        "pef" => Some("image/x-pentax-pef"),
-        _ => None,
-    }
 }
 
 fn extract_exif(path: &Path) -> Result<ExifRecord> {

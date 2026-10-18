@@ -43,7 +43,7 @@ xcrun notarytool store-credentials loupe \
 - [ ] Info.plist: `CFBundleIconFile`, `NSHighResolutionCapable`, `LSUIElement`, `LSMinimumSystemVersion` 14.0, copyright, `NSPhotoLibraryUsageDescription` when Photos ships.
 - [ ] Hardened runtime (`codesign --options runtime`) already in the script.
 - [ ] Entitlements today: `network.client`, `files.user-selected.read-write`. Add `com.apple.security.personal-information.photos-library` only with the Photos feature.
-- [ ] No GGUF weights in the pkg (~865 MB). First launch downloads them.
+- [ ] No EmbeddingGemma weights in the pkg (~530 MB LiteRT download on first launch).
 
 ## 5. Build, sign, staple
 
@@ -71,12 +71,12 @@ APPLE_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 ## 7. Not this version
 
 - Mac App Store / sandbox. User-selected folders plus `.photo_index` on external disks fights the sandbox. Developer ID outside the store is the path.
-- Intel Mac. llama.cpp is pinned to Apple Silicon.
+- Intel Mac. The pinned LiteRT dylib is Apple Silicon.
 - Photos.app library (see issue #2).
 
 ## 8. Checks before a human gets the pkg
 
-- [ ] `scripts/e2e-gui.sh` PASS (isolated state, no download, no llama start)
+- [ ] `scripts/e2e-gui.sh` PASS (isolated state, no download, no embedder sidecar)
 - [ ] Idle 45 s: footprint and leak bytes stable
 - [ ] First-run on a clean Application Support: banner reaches 100 %, then a search returns photos
 - [ ] External disk: Index on the volume, unplug, plug into a second Mac, search hits without re-index

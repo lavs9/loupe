@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use rusqlite::{ffi::sqlite3_auto_extension, params, Connection, OpenFlags, OptionalExtension};
 use sqlite_vec::sqlite3_vec_init;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use zerocopy::IntoBytes;
 
 use crate::parser::ParsedQuery;
@@ -196,6 +196,62 @@ impl CatalogDb {
         })
     }
 
+    /// Drop every indexed row. Used on a fresh rebuild database, never on the
+    /// live catalog while search still needs the previous model.
+    #[allow(dead_code)]
+    pub fn clear_media(&mut self) -> Result<()> {
+        self.conn.execute_batch(
+            "DROP TABLE IF EXISTS vec_media;
+             DROP TABLE IF EXISTS media_fts;
+             DELETE FROM exif_metadata;
+             DELETE FROM file_paths;
+             DELETE FROM media_assets;",
+        )?;
+        self.init_schema()?;
+        self.wal_checkpoint();
+        Ok(())
+    }
+
+    /// `catalog.db` plus the WAL/SHM files SQLite keeps next to it.
+    fn sqlite_suffix(path: &Path, suffix: &str) -> PathBuf {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(suffix);
+        path.with_file_name(name)
+    }
+
+    pub fn remove_sqlite_files(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(Self::sqlite_suffix(path, "-wal"));
+        let _ = std::fs::remove_file(Self::sqlite_suffix(path, "-shm"));
+    }
+
+    /// Put `rebuild` at `live` after a model swap. The previous catalog is
+    /// deleted only after the new file is in place. A failed rename puts the
+    /// previous catalog back.
+    pub fn swap_sqlite(live: &Path, rebuild: &Path) -> Result<()> {
+        let legacy = live.with_file_name("catalog.legacy.db");
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(Self::sqlite_suffix(live, suffix));
+            let _ = std::fs::remove_file(Self::sqlite_suffix(rebuild, suffix));
+            let _ = std::fs::remove_file(Self::sqlite_suffix(&legacy, suffix));
+        }
+        let _ = std::fs::remove_file(&legacy);
+        std::fs::rename(live, &legacy)
+            .with_context(|| format!("could not set aside {}", live.display()))?;
+        match std::fs::rename(rebuild, live) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&legacy);
+                Ok(())
+            }
+            Err(err) => {
+                let _ = std::fs::rename(&legacy, live);
+                Err(err).with_context(|| {
+                    format!("could not install the new catalog at {}", live.display())
+                })
+            }
+        }
+    }
+
     pub fn model_mismatch(&self, current: &str) -> Result<bool> {
         let other: Option<String> = self
             .conn
@@ -285,7 +341,7 @@ impl CatalogDb {
                 file_size   = excluded.file_size",
             params![blake3_hash, rel_path, mtime, size as i64],
         )?;
-        write_fts(&self.conn, blake3_hash)?;
+        write_fts(&self.conn, blake3_hash, None)?;
         Ok(())
     }
 
@@ -299,6 +355,7 @@ impl CatalogDb {
         model_version: &str,
         exif: &ExifRecord,
         embedding: &[f32; EMBED_DIM],
+        fts_body: &str,
     ) -> Result<()> {
         let tx = self.conn.transaction()?;
         let now = chrono::Utc::now().timestamp();
@@ -343,7 +400,7 @@ impl CatalogDb {
             "INSERT OR REPLACE INTO vec_media (blake3_hash, embedding) VALUES (?1, ?2)",
             params![blake3_hash, embedding.as_bytes()],
         )?;
-        write_fts(&tx, blake3_hash)?;
+        write_fts(&tx, blake3_hash, Some(fts_body))?;
 
         tx.commit()?;
         Ok(())
@@ -473,7 +530,7 @@ impl CatalogDb {
     }
 }
 
-fn write_fts(conn: &Connection, blake3_hash: &str) -> Result<()> {
+fn write_fts(conn: &Connection, blake3_hash: &str, extra: Option<&str>) -> Result<()> {
     let mut stmt = conn.prepare(
         "SELECT fp.rel_path, ex.camera_make, ex.camera_model, ex.lens_model
          FROM file_paths fp
@@ -498,7 +555,13 @@ fn write_fts(conn: &Connection, blake3_hash: &str) -> Result<()> {
         "DELETE FROM media_fts WHERE blake3_hash = ?1",
         params![blake3_hash],
     )?;
-    let body = parts.join(" ");
+    let mut body = parts.join(" ");
+    if let Some(extra) = extra {
+        if !extra.trim().is_empty() {
+            body.push(' ');
+            body.push_str(extra);
+        }
+    }
     if !body.trim().is_empty() {
         conn.execute(
             "INSERT INTO media_fts (blake3_hash, body) VALUES (?1, ?2)",

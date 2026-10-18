@@ -1,34 +1,38 @@
 use anyhow::{anyhow, Context, Result};
-use base64::Engine;
-use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zip::ZipArchive;
 
 use crate::db::EMBED_DIM;
 use crate::embedder::{image_for_embedding, MultimodalEmbedder, MODEL_ID};
+use crate::litert::{LitertEngine, Part};
 use crate::sources::{self, volumes_root};
 
-const LLAMA_TAG: &str = "b11642";
-const LLAMA_URL: &str = "https://github.com/ggml-org/llama.cpp/releases/download/b11642/llama-b11642-bin-macos-arm64.tar.gz";
-const LLAMA_TAR_BYTES: u64 = 12_175_015;
+const LITERT_TAG: &str = "v0.18.0";
+const RUNTIME_ZIP: &str = "CLiteRTLM_mac.xcframework.zip";
+const RUNTIME_ZIP_URL: &str = "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.18.0/CLiteRTLM_mac.xcframework.zip";
+const RUNTIME_ZIP_BYTES: u64 = 45_143_303;
+const DYLIB_NAME: &str = "libCLiteRTLM_mac.dylib";
+const DYLIB_BYTES: u64 = 137_802_416;
+const DYLIB_ZIP_PATH: &str = "CLiteRTLM_mac.xcframework/macos-arm64_x86_64/libCLiteRTLM_mac.dylib";
 
-const TEXT_FILE: &str = "embeddinggemma-2-Q8_0.gguf";
-const VISION_FILE: &str = "mmproj-embeddinggemma-2-Q8_0.gguf";
-const TEXT_BYTES: u64 = 309_855_456;
-const VISION_BYTES: u64 = 554_821_024;
-const TEXT_URL: &str = "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/embeddinggemma-2-Q8_0.gguf";
-const VISION_URL: &str = "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/mmproj-embeddinggemma-2-Q8_0.gguf";
+const MODEL_FILE: &str = "embeddinggemma-2-740m.litertlm";
+const MODEL_BYTES: u64 = 484_622_336;
+const MODEL_URL: &str = "https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm/resolve/main/embeddinggemma-2-740m.litertlm";
+
+const LEGACY_TEXT: &str = "embeddinggemma-2-Q8_0.gguf";
+const LEGACY_VISION: &str = "mmproj-embeddinggemma-2-Q8_0.gguf";
 
 thread_local! {
     static FETCH: RefCell<Option<Arc<Mutex<FetchLive>>>> = const { RefCell::new(None) };
 }
 
-/// Bytes pulled down while llama.cpp or the GGUF weights are fetched.
+/// Bytes pulled down while the LiteRT dylib or EmbeddingGemma weights are fetched.
 #[derive(Debug, Clone, Default)]
 pub struct FetchLive {
     pub phase: String,
@@ -38,20 +42,20 @@ pub struct FetchLive {
     pub error: Option<String>,
 }
 
-/// True when this Mac still needs the llama.cpp binary or the GGUF weights.
-/// A preset `LOUPE_GEMMA_URL` skips the fetch (tests, `loupe serve`).
+/// True when this Mac still needs the LiteRT runtime or the 740M weights.
+/// A preset `LOUPE_GEMMA_URL` skips the fetch (window e2e).
 pub fn needs_fetch() -> bool {
     if sources::env_var("LOUPE_GEMMA_URL", "PHOTO_ENGINE_GEMMA_URL").is_ok() {
         return false;
     }
-    !server_on_disk() || weights_on_disk().is_none()
+    !runtime_on_disk() || weights_on_disk().is_none()
 }
 
-/// Download llama.cpp and the GGUF files. Does not start llama-server.
+/// Download the LiteRT dylib and the EmbeddingGemma 2 740M bundle.
 pub fn prepare_runtime(live: Arc<Mutex<FetchLive>>) -> Result<()> {
     FETCH.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&live)));
     let result: Result<()> = (|| {
-        let _ = ensure_server()?;
+        let _ = ensure_runtime()?;
         let _ = ensure_weights()?;
         Ok(())
     })();
@@ -75,17 +79,17 @@ pub fn prepare_runtime(live: Arc<Mutex<FetchLive>>) -> Result<()> {
     result
 }
 
-pub fn weights_on_disk() -> Option<(PathBuf, PathBuf)> {
+pub fn weights_on_disk() -> Option<PathBuf> {
     for dir in weight_dirs() {
-        if let Some(pair) = weights_ready(&dir) {
-            return Some(pair);
+        if let Some(path) = model_ready(&dir) {
+            return Some(path);
         }
     }
     None
 }
 
-fn server_on_disk() -> bool {
-    find_named(&runtime_dir().join(LLAMA_TAG), "llama-server", 3).is_some()
+fn runtime_on_disk() -> bool {
+    dylib_ready(&runtime_dir().join(LITERT_TAG)).is_some()
 }
 
 fn report_fetch(phase: &str, got: u64, total: u64) {
@@ -100,131 +104,52 @@ fn report_fetch(phase: &str, got: u64, total: u64) {
     });
 }
 
-/// One EmbeddingGemma 2 process. A command starts it on the first embed and
-/// stops it on exit, unless `LOUPE_GEMMA_URL` already points at one.
+/// One EmbeddingGemma 2 engine. Loaded on the first embed, dropped with Loupe.
 pub struct GemmaEmbedder {
-    inner: Mutex<Server>,
-}
-
-struct Server {
-    child: Option<Child>,
+    inner: Mutex<Option<LitertEngine>>,
 }
 
 impl GemmaEmbedder {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(Server { child: None }),
+            inner: Mutex::new(None),
         }
     }
 
-    /// Load the model and print `ready http://127.0.0.1:<port>` when it answers.
-    pub fn serve(&self, port: u16) -> Result<()> {
-        let url = self.ensure(if port == 0 { None } else { Some(port) })?;
-        println!("ready {url}");
+    /// Load the model and print `ready litert` when it answers.
+    pub fn serve(&self, _port: u16) -> Result<()> {
+        let _ = self.ensure()?;
+        println!("ready litert");
         let _ = std::io::stdout().flush();
-        let child = self.lock().child.take();
-        if let Some(mut child) = child {
-            let status = child.wait()?;
-            if !status.success() {
-                anyhow::bail!("llama-server exited with {status}");
-            }
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
         }
+    }
+
+    fn ensure(&self) -> Result<()> {
+        let mut guard = self.lock();
+        if guard.is_some() {
+            return Ok(());
+        }
+        let dylib = ensure_runtime()?;
+        let model = ensure_weights()?;
+        let cache = runtime_dir().join("litert-cache");
+        eprintln!("loading EmbeddingGemma 2 (LiteRT)");
+        *guard = Some(LitertEngine::load(&dylib, &model, &cache)?);
         Ok(())
     }
 
-    fn ensure(&self, port: Option<u16>) -> Result<String> {
-        if let Ok(url) = sources::env_var("LOUPE_GEMMA_URL", "PHOTO_ENGINE_GEMMA_URL") {
-            let url = url.trim().trim_end_matches('/').to_string();
-            if health(&url) {
-                return Ok(url);
-            }
-            anyhow::bail!(
-                "{url} is not answering. Start `loupe serve`, or unset LOUPE_GEMMA_URL."
-            );
-        }
-        let mut guard = self.lock();
-        if let Some(url) = remembered_url() {
-            if health(&url) {
-                return Ok(url);
-            }
-        }
-        let (child, url) = start_server(port)?;
-        guard.child = Some(child);
-        Ok(url)
-    }
-}
-
-fn start_server(port: Option<u16>) -> Result<(Child, String)> {
-    let bin = ensure_server()?;
-        let (text, vision) = ensure_weights()?;
-        let port = match port {
-            Some(port) => port,
-            None => free_port()?,
-        };
-        let log_path = runtime_dir().join("llama-server.log");
-        let log = File::create(&log_path)
-            .with_context(|| format!("Failed to write {}", log_path.display()))?;
-        let stderr = log.try_clone()?;
-        eprintln!("loading EmbeddingGemma 2 on 127.0.0.1:{port}");
-        let mut child = Command::new(&bin)
-            .current_dir(bin.parent().unwrap_or(Path::new(".")))
-            .arg("-m")
-            .arg(&text)
-            .arg("--mmproj")
-            .arg(&vision)
-            .arg("--embedding")
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("-c")
-            .arg("4096")
-            .arg("-b")
-            .arg("2048")
-            .arg("-ub")
-            .arg("2048")
-            .arg("-np")
-            .arg("1")
-            .arg("--pooling")
-            .arg("mean")
-            .arg("--embd-normalize")
-            .arg("2")
-            .arg("--flash-attn")
-            .arg("off")
-            .arg("--no-webui")
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .with_context(|| format!("Failed to start {}", bin.display()))?;
-        fs::write(pid_path(), child.id().to_string())?;
-        let url = format!("http://127.0.0.1:{port}");
-        wait_ready(&url, &mut child, &log_path)?;
-    fs::write(url_path(), &url)?;
-    Ok((child, url))
-}
-
-impl GemmaEmbedder {
-    fn embed_body(&self, body: Value) -> Result<[f32; EMBED_DIM]> {
-        let url = self.ensure(None)?;
-        let raw = post_json(&format!("{url}/v1/embeddings"), &body)?;
-        let value: Value = serde_json::from_str(&raw)
-            .with_context(|| format!("Embedding response was not JSON: {}", clip(&raw)))?;
-        let full = embedding_values(&value)?;
-        mrl_256(&full)
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Server> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<LitertEngine>> {
         self.inner.lock().unwrap_or_else(|poison| poison.into_inner())
     }
-}
 
-impl Drop for GemmaEmbedder {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.lock().child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+    fn embed_parts(&self, parts: &[Part<'_>]) -> Result<[f32; EMBED_DIM]> {
+        self.ensure()?;
+        let guard = self.lock();
+        let engine = guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("EmbeddingGemma 2 is not loaded"))?;
+        engine.embed(parts)
     }
 }
 
@@ -234,40 +159,88 @@ impl MultimodalEmbedder for GemmaEmbedder {
     }
 
     fn embed_image(&self, image_path: &Path) -> Result<Option<[f32; EMBED_DIM]>> {
-        let Some((bytes, mime)) = image_for_embedding(image_path)? else {
+        let Some((bytes, _)) = image_for_embedding(image_path)? else {
             return Ok(None);
         };
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let body = json!({
-            "model": "embeddinggemma-2",
-            "input": [{
-                "content": [{
-                    "type": "image_url",
-                    "image_url": { "url": format!("data:{mime};base64,{encoded}") }
-                }]
-            }]
-        });
-        Ok(Some(self.embed_body(body)?))
+        Ok(Some(self.embed_parts(&[Part::Image(&bytes)])?))
+    }
+
+    fn embed_audio(&self, audio_path: &Path) -> Result<Option<[f32; EMBED_DIM]>> {
+        let Some(wav) = audio_wav_16k(audio_path) else {
+            return Ok(None);
+        };
+        Ok(Some(self.embed_parts(&[Part::Audio(&wav)])?))
+    }
+
+    fn embed_multimodal(
+        &self,
+        image: Option<&[u8]>,
+        audio: Option<&[u8]>,
+    ) -> Result<Option<[f32; EMBED_DIM]>> {
+        let mut parts = Vec::new();
+        if let Some(image) = image.filter(|bytes| !bytes.is_empty()) {
+            parts.push(Part::Image(image));
+        }
+        if let Some(audio) = audio.filter(|bytes| !bytes.is_empty()) {
+            parts.push(Part::Audio(audio));
+        }
+        if parts.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(self.embed_parts(&parts)?))
     }
 
     fn embed_text(&self, text: &str) -> Result<[f32; EMBED_DIM]> {
         let text = text.trim();
         let text = if text.is_empty() { "photo" } else { text };
-        let body = json!({
-            "input": format!("task: search result | query: {text}")
-        });
-        self.embed_body(body)
+        let prompt = format!("task: search query | text: {text}");
+        self.embed_parts(&[Part::Text(&prompt)])
+    }
+
+    fn embed_document(&self, text: &str) -> Result<[f32; EMBED_DIM]> {
+        let text = text.trim();
+        let text = if text.is_empty() { "document" } else { text };
+        let prompt = format!("task: search result | text: {text}");
+        self.embed_parts(&[Part::Text(&prompt)])
     }
 }
 
-/// Put the GGUF weights on `drive_root` so the disk carries the model.
+/// Put the LiteRT weights on `drive_root` so the disk carries the model.
 pub fn publish_models(drive_root: &Path) -> Result<()> {
-    let (text, vision) = ensure_weights()?;
+    let model = ensure_weights()?;
     let dest = drive_root.join(".photo_index/models");
     fs::create_dir_all(&dest)?;
-    place_file(&text, &dest.join(TEXT_FILE))?;
-    place_file(&vision, &dest.join(VISION_FILE))?;
+    place_file(&model, &dest.join(MODEL_FILE))?;
+    drop_legacy_ggufs(&dest);
     Ok(())
+}
+
+/// After a catalog is on the new model, drop llama.cpp and the old GGUFs.
+pub fn retire_llama_runtime() {
+    if let Ok(pid) = fs::read_to_string(runtime_dir().join("llama-server.pid")) {
+        if let Ok(pid) = pid.trim().parse::<i32>() {
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+    }
+    let _ = fs::remove_file(runtime_dir().join("llama-server.pid"));
+    let _ = fs::remove_file(runtime_dir().join("llama-server.url"));
+    let _ = fs::remove_file(runtime_dir().join("llama-server.log"));
+    let _ = fs::remove_dir_all(runtime_dir().join("b11642"));
+    drop_legacy_ggufs(&model_dir());
+    for dir in weight_dirs() {
+        drop_legacy_ggufs(&dir);
+    }
+}
+
+fn drop_legacy_ggufs(dir: &Path) {
+    for name in [LEGACY_TEXT, LEGACY_VISION] {
+        let path = dir.join(name);
+        if path.is_file() {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 fn model_dir() -> PathBuf {
@@ -284,64 +257,72 @@ fn runtime_dir() -> PathBuf {
     sources::state_dir().join("runtime")
 }
 
-fn pid_path() -> PathBuf {
-    runtime_dir().join("llama-server.pid")
-}
-
-fn url_path() -> PathBuf {
-    runtime_dir().join("llama-server.url")
-}
-
-fn remembered_url() -> Option<String> {
-    let text = fs::read_to_string(url_path()).ok()?;
-    let url = text.trim().to_string();
-    if url.starts_with("http") {
-        Some(url)
-    } else {
-        None
-    }
-}
-
-fn ensure_server() -> Result<PathBuf> {
-    let root = runtime_dir().join(LLAMA_TAG);
-    if let Some(bin) = find_named(&root, "llama-server", 3) {
-        return Ok(bin);
+fn ensure_runtime() -> Result<PathBuf> {
+    let root = runtime_dir().join(LITERT_TAG);
+    if let Some(dylib) = dylib_ready(&root) {
+        adhoc_sign(&dylib);
+        return Ok(dylib);
     }
     if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
         anyhow::bail!(
-            "The pinned llama.cpp build is for macOS Apple Silicon. This machine is {} {}.",
+            "The pinned LiteRT build is for macOS Apple Silicon. This machine is {} {}.",
             std::env::consts::OS,
             std::env::consts::ARCH
         );
     }
     fs::create_dir_all(&root)?;
-    let archive = root.join("llama-server.tar.gz");
-    download_file(LLAMA_URL, &archive, LLAMA_TAR_BYTES)?;
-    let status = Command::new("tar")
-        .arg("-xzf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&root)
-        .status()
-        .context("Failed to run tar")?;
-    if !status.success() {
-        anyhow::bail!("tar could not extract {}", archive.display());
-    }
-    find_named(&root, "llama-server", 3)
-        .ok_or_else(|| anyhow!("llama-server was not in {}", root.display()))
+    let archive = root.join(RUNTIME_ZIP);
+    download_file(RUNTIME_ZIP_URL, &archive, RUNTIME_ZIP_BYTES)?;
+    extract_dylib(&archive, &root)?;
+    let dylib = dylib_ready(&root)
+        .ok_or_else(|| anyhow!("LiteRT dylib was not in {}", archive.display()))?;
+    adhoc_sign(&dylib);
+    Ok(dylib)
 }
 
-fn ensure_weights() -> Result<(PathBuf, PathBuf)> {
+fn extract_dylib(archive: &Path, dest_dir: &Path) -> Result<()> {
+    let file = File::open(archive)?;
+    let mut zip = ZipArchive::new(file).context("LiteRT xcframework zip")?;
+    let mut found = None;
+    for index in 0..zip.len() {
+        let name = zip.by_index(index)?.name().to_string();
+        if name == DYLIB_ZIP_PATH || name.ends_with(DYLIB_NAME) {
+            found = Some(index);
+            break;
+        }
+    }
+    let index = found.ok_or_else(|| anyhow!("LiteRT zip has no {DYLIB_NAME}"))?;
+    let mut item = zip.by_index(index)?;
+    let dest = dest_dir.join(DYLIB_NAME);
+    let partial = dest.with_extension("partial");
+    let mut out = File::create(&partial)?;
+    std::io::copy(&mut item, &mut out)?;
+    out.sync_all()?;
+    drop(out);
+    fs::rename(&partial, &dest)?;
+    Ok(())
+}
+
+fn adhoc_sign(path: &Path) {
+    let _ = Command::new("/usr/bin/codesign")
+        .args(["-s", "-", "-f", "--timestamp=none"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn ensure_weights() -> Result<PathBuf> {
     for dir in weight_dirs() {
-        if let Some(pair) = weights_ready(&dir) {
-            return Ok(pair);
+        if let Some(path) = model_ready(&dir) {
+            return Ok(path);
         }
     }
     let dir = model_dir();
     fs::create_dir_all(&dir)?;
-    download_file(TEXT_URL, &dir.join(TEXT_FILE), TEXT_BYTES)?;
-    download_file(VISION_URL, &dir.join(VISION_FILE), VISION_BYTES)?;
-    weights_ready(&dir).ok_or_else(|| anyhow!("EmbeddingGemma weights did not finish downloading"))
+    download_file(MODEL_URL, &dir.join(MODEL_FILE), MODEL_BYTES)?;
+    model_ready(&dir).ok_or_else(|| anyhow!("EmbeddingGemma weights did not finish downloading"))
 }
 
 fn weight_dirs() -> Vec<PathBuf> {
@@ -360,18 +341,19 @@ fn weight_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn weights_ready(dir: &Path) -> Option<(PathBuf, PathBuf)> {
-    let text = dir.join(TEXT_FILE);
-    let vision = dir.join(VISION_FILE);
-    let text_ok = fs::metadata(&text).map(|meta| meta.len() == TEXT_BYTES).unwrap_or(false);
-    let vision_ok = fs::metadata(&vision)
-        .map(|meta| meta.len() == VISION_BYTES)
+fn model_ready(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join(MODEL_FILE);
+    let ok = fs::metadata(&path)
+        .map(|meta| meta.len() == MODEL_BYTES)
         .unwrap_or(false);
-    if text_ok && vision_ok {
-        Some((text, vision))
-    } else {
-        None
-    }
+    ok.then_some(path)
+}
+
+fn dylib_ready(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join(DYLIB_NAME);
+    let len = fs::metadata(&path).map(|meta| meta.len()).ok()?;
+    // Ad-hoc codesign changes the byte count. The zip payload is DYLIB_BYTES.
+    (len == DYLIB_BYTES || (len > 100_000_000 && len < 200_000_000)).then_some(path)
 }
 
 fn place_file(src: &Path, dest: &Path) -> Result<()> {
@@ -417,7 +399,7 @@ fn download_file(url: &str, dest: &Path, expected: u64) -> Result<()> {
         expected as f64 / 1_000_000.0
     );
     let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(180))
+        .timeout(Duration::from_secs(600))
         .user_agent("loupe")
         .build();
     let response = agent
@@ -460,168 +442,63 @@ fn download_file(url: &str, dest: &Path, expected: u64) -> Result<()> {
     Ok(())
 }
 
-fn find_named(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
-    if depth == 0 || !dir.is_dir() {
-        return None;
-    }
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.file_name().and_then(|file| file.to_str()) == Some(name) && path.is_file() {
-            return Some(path);
-        }
-        if path.is_dir() {
-            if let Some(found) = find_named(&path, name, depth - 1) {
-                return Some(found);
-            }
+/// 16 kHz mono WAV for the audio encoder. `None` when this Mac cannot decode the file.
+pub fn audio_wav_16k(path: &Path) -> Option<Vec<u8>> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|time| time.as_nanos())
+        .unwrap_or(0);
+    let out = std::env::temp_dir().join(format!("loupe-wav-{stamp}.wav"));
+    let converted = if let Some(ffmpeg) = ffmpeg_bin() {
+        Command::new(ffmpeg)
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-t",
+                "120",
+                "-i",
+            ])
+            .arg(path)
+            .args(["-vn", "-ac", "1", "-ar", "16000", "-f", "wav", "-y"])
+            .arg(&out)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()
+            .filter(|status| status.success())
+            .and_then(|_| fs::read(&out).ok())
+    } else {
+        None
+    };
+    let bytes = converted.or_else(|| {
+        Command::new("/usr/bin/afconvert")
+            .args(["-f", "WAVE", "-d", "LEI16@16000", "-c", "1"])
+            .arg(path)
+            .arg(&out)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()
+            .filter(|status| status.success())
+            .and_then(|_| fs::read(&out).ok())
+    });
+    let _ = fs::remove_file(&out);
+    bytes.filter(|body| body.len() > 44 && body.starts_with(b"RIFF"))
+}
+
+fn ffmpeg_bin() -> Option<&'static str> {
+    for bin in [
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/usr/bin/ffmpeg",
+    ] {
+        if Path::new(bin).is_file() {
+            return Some(bin);
         }
     }
     None
-}
-
-fn free_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
-}
-
-fn health(url: &str) -> bool {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(2))
-        .build();
-    matches!(agent.get(&format!("{url}/health")).call(), Ok(response) if response.status() == 200)
-}
-
-fn wait_ready(url: &str, child: &mut Child, log_path: &Path) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(300);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            anyhow::bail!(
-                "llama-server exited with {status}\n{}",
-                log_tail(log_path)
-            );
-        }
-        if health(url) {
-            return Ok(());
-        }
-        if Instant::now() > deadline {
-            anyhow::bail!(
-                "EmbeddingGemma did not become ready at {url}\n{}",
-                log_tail(log_path)
-            );
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
-}
-
-fn post_json(url: &str, body: &Value) -> Result<String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(180))
-        .build();
-    let response = agent
-        .post(url)
-        .set("content-type", "application/json")
-        .send_json(body);
-    match response {
-        Ok(response) => Ok(response.into_string()?),
-        Err(ureq::Error::Status(code, response)) => {
-            let text = response.into_string().unwrap_or_default();
-            anyhow::bail!("embedding request failed: {code} {}", clip(&text));
-        }
-        Err(err) => Err(err).context("embedding request failed"),
-    }
-}
-
-fn embedding_values(value: &Value) -> Result<Vec<f32>> {
-    let embedding = value
-        .pointer("/data/0/embedding")
-        .or_else(|| value.get("embedding"))
-        .ok_or_else(|| anyhow!("response has no embedding: {}", clip(&value.to_string())))?;
-    flatten_embedding(embedding)
-}
-
-fn flatten_embedding(value: &Value) -> Result<Vec<f32>> {
-    let Value::Array(items) = value else {
-        anyhow::bail!("embedding is not an array");
-    };
-    if items.first().and_then(Value::as_array).is_some() {
-        let mut acc = Vec::new();
-        let mut count = 0f32;
-        for token in items {
-            let row = as_f32s(token)?;
-            if acc.is_empty() {
-                acc = row;
-            } else if acc.len() != row.len() {
-                anyhow::bail!("token rows differ in length");
-            } else {
-                for (slot, value) in acc.iter_mut().zip(row) {
-                    *slot += value;
-                }
-            }
-            count += 1.0;
-        }
-        if count == 0.0 {
-            anyhow::bail!("embedding is empty");
-        }
-        for value in &mut acc {
-            *value /= count;
-        }
-        return Ok(acc);
-    }
-    as_f32s(value)
-}
-
-fn as_f32s(value: &Value) -> Result<Vec<f32>> {
-    let Value::Array(items) = value else {
-        anyhow::bail!("embedding is not an array");
-    };
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        let number = item
-            .as_f64()
-            .ok_or_else(|| anyhow!("embedding value is not a number"))?;
-        out.push(number as f32);
-    }
-    Ok(out)
-}
-
-fn mrl_256(full: &[f32]) -> Result<[f32; EMBED_DIM]> {
-    if full.len() < EMBED_DIM {
-        anyhow::bail!(
-            "EmbeddingGemma returned {} values, need at least {EMBED_DIM}",
-            full.len()
-        );
-    }
-    let mut out = [0f32; EMBED_DIM];
-    out.copy_from_slice(&full[..EMBED_DIM]);
-    if out.iter().any(|value| !value.is_finite()) {
-        anyhow::bail!(
-            "EmbeddingGemma returned a non-finite value. It has to run in bf16 or fp32, not fp16."
-        );
-    }
-    let norm = out.iter().map(|value| value * value).sum::<f32>().sqrt();
-    if norm < 1e-6 {
-        anyhow::bail!("EmbeddingGemma returned an empty vector");
-    }
-    for value in &mut out {
-        *value /= norm;
-    }
-    Ok(out)
-}
-
-fn log_tail(path: &Path) -> String {
-    let Ok(text) = fs::read_to_string(path) else {
-        return String::new();
-    };
-    let start = text.len().saturating_sub(2000);
-    text[start..].to_string()
-}
-
-fn clip(text: &str) -> String {
-    let mut short: String = text.chars().take(500).collect();
-    if text.chars().count() > 500 {
-        short.push('…');
-    }
-    short
 }

@@ -1,14 +1,14 @@
 # Shipping Loupe on macOS
 
-Loupe is an accessory menu-bar app. The public download is an **unsigned** `.dmg`: open it, drag Loupe to Applications, right-click Open. The site Download button is `https://github.com/lavs9/loupe/releases/latest/download/Loupe.dmg` (stable filename on the newest GitHub release). A signed, notarized image is [issue #4](https://github.com/lavs9/loupe/issues/4). The EmbeddingGemma 2 weights (~865 MB) are **not** in the image. First launch downloads them into `~/Library/Application Support/loupe/`.
+Loupe is an accessory menu-bar app. The public download is an **unsigned** `.dmg`: open it, drag Loupe to Applications, right-click Open. The site Download button is `https://github.com/lavs9/loupe/releases/latest/download/Loupe.dmg` (stable filename on the newest GitHub release). A signed, notarized image is [issue #4](https://github.com/lavs9/loupe/issues/4). The EmbeddingGemma 2 weights (~485 MB) plus the LiteRT runtime zip (~45 MB) are **not** in the image. First launch downloads them into `~/Library/Application Support/loupe/`.
 
 ## What we ship
 
 | Piece | Where it lives | Size |
 |---|---|---|
 | `Loupe.app` | `/Applications` | the `loupe` binary with `--features gui`, Info.plist, icon |
-| llama.cpp b11642 | downloaded into Application Support/runtime | ~12 MB |
-| `embeddinggemma-2-Q8_0.gguf` + mmproj | downloaded into Application Support/models | ~865 MB |
+| LiteRT-LM v0.18.0 dylib | downloaded into Application Support/runtime | ~45 MB zip, ~138 MB unpacked |
+| `embeddinggemma-2-740m.litertlm` | downloaded into Application Support/models | ~485 MB |
 | `.photo_index/` | next to the photos, never in the app bundle | catalog |
 
 LSUIElement is true. No Dock icon. Open at login is a Settings checkbox that writes `~/Library/LaunchAgents/app.loupe.gui.plist`.
@@ -65,10 +65,10 @@ Photos library access is a later version.
 ## First-run loadup
 
 1. User opens the `.dmg`, drags Loupe to Applications, launches it. The window opens. The process takes the menu-bar seat.
-2. If Application Support has no GGUF files and `LOUPE_GEMMA_URL` is unset, first launch is a full screen: downloading the on-device model. Hide to menu bar; come back when it finishes.
-3. llama-server is **not** started during the fetch. RSS stays near the idle 46 MB plus download buffers.
-4. First search or Index starts llama-server against those files. A later launch reuses `llama-server.url` if that process is still healthy.
-5. Indexing a folder copies (or hard-links) the weights into that folder’s `.photo_index/models/` so the disk carries the model.
+2. If Application Support has no LiteRT weights and `LOUPE_GEMMA_URL` is unset, first launch is a full screen: downloading the on-device model. Hide to menu bar; come back when it finishes.
+3. The embedder is **not** loaded during the fetch. RSS stays near the idle 46 MB plus download buffers.
+4. First search or Index loads EmbeddingGemma 2 in-process. A later launch reuses the same files.
+5. Indexing a folder copies (or hard-links) the weights into that folder’s `.photo_index/models/` so the disk carries the model. After that catalog is on the new model, llama.cpp and the old GGUFs in this profile are deleted.
 
 A LaunchAgent start at login follows the same path. The fetch is skipped when the files are already there.
 
@@ -79,12 +79,12 @@ The in-app update feed is `docs/update.json` on Pages (`https://lavs9.github.io/
 ## Not this version
 
 - App Store / sandbox. User-selected folders plus a sidecar `.photo_index` on external disks fights the sandbox. Developer ID outside the store is the path.
-- Bundling GGUF in the dmg. 865 MB on every update is worse than a first-run download with a progress bar.
-- Intel Mac. The pinned llama.cpp build is Apple Silicon.
+- Bundling the 485 MB model in the dmg. A first-run download with a progress bar is better.
+- Intel Mac. The pinned LiteRT dylib is Apple Silicon.
 
 ## Check before a human gets the dmg
 
-- `scripts/e2e-gui.sh` (isolated state, must not download, must not start llama)
+- `scripts/e2e-gui.sh` (isolated state, must not download, must not start the embedder)
 - Idle 45 s: footprint stable, leak bytes stable
 - First-run on a clean Application Support: banner reaches 100 %, then a search returns photos
 - After staple, open the dmg, drag to Applications, double-click without right-click Open

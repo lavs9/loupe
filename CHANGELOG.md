@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Audio (mp3, m4a, and the usual sound files) and video (mp4, mov, mkv, and the usual containers). One vector per file. A clip is a frame plus the soundtrack.
+- EmbeddingGemma 2 runs in-process through LiteRT-LM. First launch downloads about 530 MB.
+
+### Changed
+- Site stills replaced with unmarked originals.
+- Public site: photos, clips, and songs; first-launch model about 530 MB.
+- A catalog built on the previous model is rebuilt, then the old index is deleted.
+
+### Removed
+- llama.cpp sidecar and GGUF weights after a folder is on the new model.
+
 ## [0.1.2] - 2026-10-18
 
 ### Added

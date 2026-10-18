@@ -19,7 +19,7 @@ export LOUPE_STATE_DIR="$ROOT/state"
 export LOUPE_VOLUMES="$ROOT/volumes"
 export LOUPE_MODEL_DIR="$PWD/target/gemma-models"
 export LOUPE_RUNTIME_DIR="$PWD/target/gemma-runtime"
-# A dead embedder URL. Opening the window must not download weights or start llama.cpp.
+# A dead embedder URL. Opening the window must not download weights.
 export LOUPE_GEMMA_URL="http://127.0.0.1:9"
 mkdir -p "$ROOT/state" "$ROOT/volumes/EmptyDisk" "$LOUPE_MODEL_DIR" "$LOUPE_RUNTIME_DIR"
 
@@ -100,7 +100,7 @@ test "$before" = "$after" || {
 if [[ -f "$pidfile" ]]; then
   now_pid=$(cat "$pidfile")
   if [[ "$now_pid" != "$before_pid" ]] && kill -0 "$now_pid" 2>/dev/null; then
-    echo "opening the window started llama.cpp" >&2
+    echo "opening the window started the embedder sidecar" >&2
     exit 1
   fi
 fi

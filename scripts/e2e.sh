@@ -27,10 +27,6 @@ mkdir -p "$ROOT/local/Photos" "$ROOT/volumes/BackupHDD/Photos" "$ROOT/volumes/Em
   "$LOUPE_MODEL_DIR" "$LOUPE_RUNTIME_DIR"
 
 cleanup() {
-  if [[ -n "${serve_pid:-}" ]]; then
-    kill "$serve_pid" 2>/dev/null || true
-    wait "$serve_pid" 2>/dev/null || true
-  fi
   if [[ -f "$LOUPE_RUNTIME_DIR/llama-server.pid" ]]; then
     kill "$(cat "$LOUPE_RUNTIME_DIR/llama-server.pid")" 2>/dev/null || true
   fi
@@ -67,29 +63,6 @@ sips -s format avif "$ROOT/volumes/BackupHDD/Photos/frame-b.jpg" --out "$ROOT/vo
   || { echo "FAIL: could not write an AVIF" >&2; exit 1; }
 test -s "$ROOT/local/Photos/frame-a.heic"
 test -s "$ROOT/volumes/BackupHDD/Photos/frame-b.avif"
-
-"$BIN" serve >"$ROOT/serve.out" 2>"$ROOT/serve.err" &
-serve_pid=$!
-ready=""
-for _ in $(seq 1 900); do
-  if ! kill -0 "$serve_pid" 2>/dev/null; then
-    echo "serve exited before it was ready" >&2
-    cat "$ROOT/serve.err" >&2
-    exit 1
-  fi
-  ready=$(grep '^ready http' "$ROOT/serve.out" || true)
-  if [[ -n "$ready" ]]; then
-    break
-  fi
-  sleep 1
-done
-if [[ -z "$ready" ]]; then
-  echo "EmbeddingGemma did not become ready" >&2
-  tail -80 "$ROOT/serve.err" >&2
-  exit 1
-fi
-export LOUPE_GEMMA_URL="${ready#ready }"
-
 "$BIN" index "$ROOT/local"
 "$BIN" index "$ROOT/volumes/BackupHDD"
 
