@@ -1,8 +1,8 @@
 [package]
 name = "loupe"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
-description = "Search photos on this Mac and on disks you plug in. The index lives next to the photos."
+description = "Search photos, clips, and songs on this Mac and on disks you plug in. The index lives next to the files."
 
 [features]
 # The window pulls in GPUI. The command-line build stays the default.
