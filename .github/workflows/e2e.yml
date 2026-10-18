@@ -1,0 +1,20 @@
+name: e2e
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  self-check:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CLI
+        run: cargo build -q
+      - name: Self-check
+        run: |
+          set -euo pipefail
+          ./target/debug/loupe gui --self-check | tee target/self-check.txt
+          grep -q 'audio-cap 30s ' target/self-check.txt
+          grep -q 'images v1' target/self-check.txt
+          grep -q 'feed-newer available 99.0.0' target/self-check.txt

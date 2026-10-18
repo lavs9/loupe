@@ -442,6 +442,13 @@ fn download_file(url: &str, dest: &Path, expected: u64) -> Result<()> {
     Ok(())
 }
 
+/// Seconds of soundtrack the LiteRT 1024-token signature can take.
+/// EmbeddingGemma 2 spends 25 audio tokens per second; 30 s is 750 tokens,
+/// which still fits a video frame (140) in the same call.
+pub const AUDIO_SECONDS: u32 = 30;
+const WAV_RATE: u32 = 16_000;
+const WAV_HEADER: usize = 44;
+
 /// 16 kHz mono WAV for the audio encoder. `None` when this Mac cannot decode the file.
 pub fn audio_wav_16k(path: &Path) -> Option<Vec<u8>> {
     let stamp = SystemTime::now()
@@ -449,6 +456,7 @@ pub fn audio_wav_16k(path: &Path) -> Option<Vec<u8>> {
         .map(|time| time.as_nanos())
         .unwrap_or(0);
     let out = std::env::temp_dir().join(format!("loupe-wav-{stamp}.wav"));
+    let seconds = AUDIO_SECONDS.to_string();
     let converted = if let Some(ffmpeg) = ffmpeg_bin() {
         Command::new(ffmpeg)
             .args([
@@ -457,7 +465,7 @@ pub fn audio_wav_16k(path: &Path) -> Option<Vec<u8>> {
                 "-loglevel",
                 "error",
                 "-t",
-                "120",
+                &seconds,
                 "-i",
             ])
             .arg(path)
@@ -487,7 +495,85 @@ pub fn audio_wav_16k(path: &Path) -> Option<Vec<u8>> {
             .and_then(|_| fs::read(&out).ok())
     });
     let _ = fs::remove_file(&out);
-    bytes.filter(|body| body.len() > 44 && body.starts_with(b"RIFF"))
+    bytes.and_then(trim_wav_16k_mono)
+}
+
+/// Keep the first `AUDIO_SECONDS` of a 16 kHz 16-bit mono WAV. LiteRT rejects
+/// anything over 1024 tokens (~41 s of audio).
+fn trim_wav_16k_mono(mut bytes: Vec<u8>) -> Option<Vec<u8>> {
+    if bytes.len() <= WAV_HEADER || !bytes.starts_with(b"RIFF") {
+        return None;
+    }
+    let max_data = AUDIO_SECONDS as usize * WAV_RATE as usize * 2;
+    if bytes.len() > WAV_HEADER + max_data {
+        bytes.truncate(WAV_HEADER + max_data);
+        let riff_size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        if bytes.len() >= 44 && &bytes[36..40] == b"data" {
+            let data_size = max_data as u32;
+            bytes[40..44].copy_from_slice(&data_size.to_le_bytes());
+        }
+    }
+    (bytes.len() > WAV_HEADER).then_some(bytes)
+}
+
+/// Write a silent PCM WAV. Used to prove a 120 s track is cut to `AUDIO_SECONDS`.
+fn write_pcm16_wav(path: &Path, rate: u32, seconds: u32) -> Result<()> {
+    let samples = (rate as usize)
+        .checked_mul(seconds as usize)
+        .ok_or_else(|| anyhow!("wav is too long to write"))?;
+    let data_bytes = samples
+        .checked_mul(2)
+        .ok_or_else(|| anyhow!("wav is too long to write"))?;
+    let mut buf = Vec::with_capacity(WAV_HEADER + data_bytes);
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&(36 + data_bytes as u32).to_le_bytes());
+    buf.extend_from_slice(b"WAVEfmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&rate.to_le_bytes());
+    buf.extend_from_slice(&(rate * 2).to_le_bytes());
+    buf.extend_from_slice(&2u16.to_le_bytes());
+    buf.extend_from_slice(&16u16.to_le_bytes());
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&(data_bytes as u32).to_le_bytes());
+    buf.resize(WAV_HEADER + data_bytes, 0);
+    fs::write(path, buf).with_context(|| format!("could not write {}", path.display()))
+}
+
+/// Convert a 120 s wav and fail if the encoder still sees more than 30 s.
+/// LiteRT rejects anything over 1024 tokens (~41 s). Missing ffmpeg/afconvert is a fail.
+pub fn print_audio_cap() -> Result<()> {
+    let dir = std::env::temp_dir();
+    let src = dir.join(format!(
+        "loupe-audio-cap-{}.wav",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|time| time.as_nanos())
+            .unwrap_or(0)
+    ));
+    write_pcm16_wav(&src, 44_100, 120)?;
+    let wav = audio_wav_16k(&src);
+    let _ = fs::remove_file(&src);
+    let Some(wav) = wav else {
+        anyhow::bail!(
+            "could not convert a 120 second wav (need ffmpeg or /usr/bin/afconvert)"
+        );
+    };
+    let data = wav.len().saturating_sub(WAV_HEADER);
+    let max = AUDIO_SECONDS as usize * WAV_RATE as usize * 2;
+    if data > max {
+        anyhow::bail!(
+            "converted wav is {data} bytes of PCM; LiteRT only takes {max} ({} s)",
+            AUDIO_SECONDS
+        );
+    }
+    if data < WAV_RATE as usize * 2 {
+        anyhow::bail!("converted wav is shorter than two seconds");
+    }
+    println!("audio-cap {AUDIO_SECONDS}s {data}");
+    Ok(())
 }
 
 fn ffmpeg_bin() -> Option<&'static str> {

@@ -15,6 +15,8 @@
 # - a mounted disk with an index is missing from the folder list
 # - a mounted disk without an index is treated as searchable
 # - an unplugged remembered disk is not marked not connected
+# - a song longer than 41 seconds is skipped (LiteRT 1024-token cap)
+# - search for that song's name returns nothing
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -63,8 +65,27 @@ sips -s format avif "$ROOT/volumes/BackupHDD/Photos/frame-b.jpg" --out "$ROOT/vo
   || { echo "FAIL: could not write an AVIF" >&2; exit 1; }
 test -s "$ROOT/local/Photos/frame-a.heic"
 test -s "$ROOT/volumes/BackupHDD/Photos/frame-b.avif"
+
+# 120 s of silence named so FTS can find it. LiteRT used to reject anything
+# over ~41 s (1024 tokens). Missing python is a fail, not a skip.
+mkdir -p "$ROOT/songs"
+python3 - "$ROOT/songs/piano-etude.wav" <<'PY' || { echo "FAIL: could not write a 120 second wav" >&2; exit 1; }
+import sys, wave
+path = sys.argv[1]
+n = 44100 * 120
+with wave.open(path, "w") as wav:
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(44100)
+    wav.writeframes(b"\x00\x00" * n)
+PY
+test -s "$ROOT/songs/piano-etude.wav" || { echo "FAIL: 120 second wav is empty" >&2; exit 1; }
+
 "$BIN" index "$ROOT/local"
 "$BIN" index "$ROOT/volumes/BackupHDD"
+song_out=$("$BIN" index "$ROOT/songs")
+echo "$song_out" | grep -q 'embedded 1' || { echo "FAIL: 120 second song was not embedded: $song_out" >&2; exit 1; }
+echo "$song_out" | grep -q 'embedded 0' && { echo "FAIL: 120 second song was skipped: $song_out" >&2; exit 1; }
 
 REPORT="$ROOT/report.txt"
 {
@@ -72,6 +93,8 @@ REPORT="$ROOT/report.txt"
   "$BIN" search golden gate bridge san francisco
   echo "=== kitchen ==="
   "$BIN" search painting of a kitchen interior
+  echo "=== piano ==="
+  "$BIN" search piano-etude --source "$ROOT/songs"
   echo "=== status ==="
   "$BIN" status 2>"$ROOT/status.err"
   echo "=== status stderr ==="
@@ -118,6 +141,11 @@ awk '
 grep -q 'frame-a.heic' "$ROOT/bridge-paths.txt" || fail "HEIC of the bridge was not searchable"
 grep -q 'frame-a.png' "$ROOT/bridge-paths.txt" || fail "PNG of the bridge was not searchable"
 grep -q 'frame-b.avif' "$ROOT/kitchen-paths.txt" || fail "AVIF of the kitchen was not searchable"
+piano=$(first_path piano)
+echo "$piano" | grep -q 'piano-etude.wav' || fail "120 second song ranked [$piano], wanted piano-etude.wav"
+sqlite3 "file:$ROOT/songs/.photo_index/db/catalog.db?immutable=1" \
+  "SELECT mime_type FROM media_assets;" | grep -q 'audio/wav' \
+  || fail "120 second song was not stored as audio"
 # The bridge photo is a different picture, so it ranks after both kitchen frames.
 kitchen_bridge_line=$(grep -n 'frame-a.png' "$ROOT/kitchen-paths.txt" | head -1 | cut -d: -f1)
 kitchen_photo_line=$(grep -n 'frame-b.jpg' "$ROOT/kitchen-paths.txt" | head -1 | cut -d: -f1)
@@ -147,6 +175,7 @@ grep -q 'feed-newer available 99.0.0 https://example.test/loupe' "$REPORT" || fa
 grep -q 'feed-same current' "$REPORT" || fail "the same version was not current"
 grep -q 'feed-older current' "$REPORT" || fail "an older feed looked newer"
 grep -q 'feed-bad failed' "$REPORT" || fail "a bad feed was accepted"
+grep -q 'audio-cap 30s ' "$REPORT" || fail "120 second audio was not cut to 30 seconds"
 grep -q $'folder\tdisk\tready\tBackupHDD\t' "$REPORT" || fail "mounted BackupHDD was not a ready disk"
 grep -q $'folder\tdisk\tno-index\tEmptyDisk\t' "$REPORT" || fail "a disk without an index was hidden"
 grep -q $'folder\tmac\tready\tThis Mac · local\t' "$REPORT" || fail "the local folder was not ready"
