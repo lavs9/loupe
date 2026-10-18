@@ -125,10 +125,19 @@ loupe mount [path]        # NFSv3 Search/<query>/
 ```
 cargo build                         # CLI
 cargo build --features gui          # CLI + window
+./scripts/dev-gui.sh                # local window, isolated state (loupe-dev)
+./scripts/reset-user.sh             # wipe packaged-app state for a first-launch test
 ./scripts/e2e.sh
 ./scripts/e2e-gui.sh
 ./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-0.1.0.dmg
 ```
+
+On this Mac, two profiles:
+
+- **User (dmg):** `~/Library/Application Support/loupe`. Download from the site, drag to Applications, right-click Open. That is the first-launch path, including Gatekeeper.
+- **Dev:** `./scripts/dev-gui.sh` writes to `~/Library/Application Support/loupe-dev`. It never touches the user profile.
+
+`./scripts/reset-user.sh` deletes the user profile, the on-device model, and `.photo_index` next to remembered folders. Photos stay.
 
 ## Documents
 
