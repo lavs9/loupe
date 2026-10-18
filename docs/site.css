@@ -178,10 +178,16 @@ h3 {
 
 .wide em { font-style: italic; color: var(--ink); }
 
+.why {
+  padding-top: 1.5rem;
+}
+
+.why h2 { max-width: 28ch; }
+
 .stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.8rem 2rem;
+  grid-template-columns: 1fr;
+  gap: 1.8rem 2.4rem;
   width: min(var(--wide), 90vw);
   margin: 4rem auto 0;
   padding: 2.2rem 0;
@@ -225,13 +231,46 @@ h3 {
   object-fit: cover;
 }
 
-.trio {
+.walk {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
   display: grid;
-  gap: 2rem;
-  margin-top: 0.5rem;
+  gap: 1.8rem;
+  counter-reset: walk;
 }
 
-.trio p { margin: 0; color: var(--mute); }
+.walk li {
+  counter-increment: walk;
+  padding-top: 0.2rem;
+}
+
+.walk li::before {
+  content: counter(walk);
+  display: block;
+  font-family: Fraunces, Palatino, serif;
+  font-style: italic;
+  font-size: 1.35rem;
+  color: var(--brass);
+  margin-bottom: 0.25rem;
+}
+
+.walk p { margin: 0; color: var(--mute); }
+
+.queries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 1.6rem 0 0;
+}
+
+.queries span {
+  font-family: Fraunces, Palatino, serif;
+  font-style: italic;
+  font-size: 1.15rem;
+  padding: 0.35rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
 
 .story {
   width: min(var(--wide), 90vw);
@@ -417,8 +456,8 @@ footer a { color: var(--mute); text-decoration: none; }
 footer a:hover { color: var(--ink); }
 
 @media (min-width: 800px) {
-  .stats { grid-template-columns: repeat(4, 1fr); }
-  .trio { grid-template-columns: 1fr 1fr 1fr; gap: 2.5rem; }
+  .stats { grid-template-columns: 1fr 1fr 1fr; }
+  .walk { grid-template-columns: 1fr 1fr 1fr; gap: 2.5rem; }
   .frames { grid-template-columns: 1fr 1fr 1fr; }
   .solution {
     grid-template-columns: 1fr 1.15fr;
