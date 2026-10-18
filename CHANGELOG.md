@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.1] - 2026-10-18
+
+### Fixed
+- Settings no longer lists a mounted installer `.dmg` as a plugged-in disk. Opening the image twice had shown Loupe and Loupe 1.
+
+### Changed
+- Installer volume is named Install Loupe.
+- Site Download is `https://github.com/lavs9/loupe/releases/latest/download/Loupe.dmg`, so it follows the newest release.
+
 ## [0.1.0] - 2026-10-17
 
 First public drop. Unsigned Apple Silicon installer.

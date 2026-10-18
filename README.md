@@ -25,7 +25,7 @@
 <p align="center">
   <a href="https://lavs9.github.io/loupe/">Website</a>
   ·
-  <a href="https://github.com/lavs9/loupe/releases/download/v0.1.0/Loupe-0.1.0.dmg">Download</a>
+  <a href="https://github.com/lavs9/loupe/releases/latest/download/Loupe.dmg">Download</a>
   ·
   <a href="SPEC.md">Spec</a>
 </p>
@@ -69,14 +69,14 @@ The model is local. Search is local. Nothing about your photos leaves this Mac o
 
 Apple Silicon. Unsigned disk image until [issue #4](https://github.com/lavs9/loupe/issues/4).
 
-1. Download [Loupe-0.1.0.dmg](https://github.com/lavs9/loupe/releases/download/v0.1.0/Loupe-0.1.0.dmg).
+1. Download [Loupe.dmg](https://github.com/lavs9/loupe/releases/latest/download/Loupe.dmg).
 2. Open it. Drag **Loupe** onto **Applications**.
 3. Right-click Loupe, choose **Open**. It sits in the menu bar. ⇧⌘Space opens search.
 4. First launch downloads the model into `~/Library/Application Support/loupe/` (~865 MB). If you index a disk, a copy of the model is written onto that disk too.
 
 ```
-./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-0.1.0.dmg
-open dist/Loupe-0.1.0.dmg
+./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-<version>.dmg + dist/Loupe.dmg
+open dist/Loupe.dmg
 ```
 
 | Chord | |
@@ -129,7 +129,7 @@ cargo build --features gui          # CLI + window
 ./scripts/reset-user.sh             # wipe packaged-app state for a first-launch test
 ./scripts/e2e.sh
 ./scripts/e2e-gui.sh
-./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-0.1.0.dmg
+./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-<version>.dmg + dist/Loupe.dmg
 ```
 
 On this Mac, two profiles:

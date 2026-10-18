@@ -305,9 +305,9 @@ fn default_local_dirs() -> Vec<PathBuf> {
 /// Disks plugged in right now.
 ///
 /// On this Mac that is each directory in `/Volumes` that `diskutil` calls
-/// external. The boot volume (`Macintosh HD`) and Recovery stay out. A check
-/// sets `LOUPE_VOLUMES` to a plain directory, and every folder there is
-/// a disk.
+/// external and is not a disk image. The boot volume (`Macintosh HD`),
+/// Recovery, and mounted installer `.dmg` files stay out. A check sets
+/// `LOUPE_VOLUMES` to a plain directory, and every folder there is a disk.
 pub fn mounted_disks() -> Vec<MountedDisk> {
     let root = volumes_root();
     let Ok(entries) = fs::read_dir(&root) else {
@@ -362,10 +362,11 @@ pub fn connected_external_catalogs() -> Vec<Catalog> {
     catalogs
 }
 
-/// `Some` when this path is an external HDD or SSD. Internal volumes are `None`.
+/// `Some` when this path is an external HDD or SSD. Internal volumes,
+/// Recovery, and disk images (a mounted installer `.dmg`) are `None`.
 fn external_medium(path: &Path) -> Option<DiskMedium> {
     if let Some(info) = diskutil_info(path) {
-        if !info.external {
+        if !info.external || info.disk_image {
             return None;
         }
         return Some(match info.solid_state {
@@ -385,6 +386,7 @@ fn external_medium(path: &Path) -> Option<DiskMedium> {
 
 struct DiskutilInfo {
     external: bool,
+    disk_image: bool,
     solid_state: Option<bool>,
 }
 
@@ -399,11 +401,14 @@ fn diskutil_info(path: &Path) -> Option<DiskutilInfo> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let mut external = false;
+    let mut disk_image = false;
     let mut solid_state = None;
     for line in text.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix("Device Location:") {
             external = value.trim() == "External";
+        } else if let Some(value) = line.strip_prefix("Protocol:") {
+            disk_image = value.trim().eq_ignore_ascii_case("Disk Image");
         } else if let Some(value) = line.strip_prefix("Solid State:") {
             solid_state = match value.trim() {
                 "Yes" => Some(true),
@@ -414,6 +419,7 @@ fn diskutil_info(path: &Path) -> Option<DiskutilInfo> {
     }
     Some(DiskutilInfo {
         external,
+        disk_image,
         solid_state,
     })
 }

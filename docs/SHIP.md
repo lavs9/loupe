@@ -1,6 +1,6 @@
 # Shipping Loupe on macOS
 
-Loupe is an accessory menu-bar app. The public download is an **unsigned** `.dmg`: open it, drag Loupe to Applications, right-click Open. A signed, notarized image is [issue #4](https://github.com/lavs9/loupe/issues/4). The EmbeddingGemma 2 weights (~865 MB) are **not** in the image. First launch downloads them into `~/Library/Application Support/loupe/`.
+Loupe is an accessory menu-bar app. The public download is an **unsigned** `.dmg`: open it, drag Loupe to Applications, right-click Open. The site Download button is `https://github.com/lavs9/loupe/releases/latest/download/Loupe.dmg` (stable filename on the newest GitHub release). A signed, notarized image is [issue #4](https://github.com/lavs9/loupe/issues/4). The EmbeddingGemma 2 weights (~865 MB) are **not** in the image. First launch downloads them into `~/Library/Application Support/loupe/`.
 
 ## What we ship
 
@@ -46,7 +46,7 @@ The script:
 1. `cargo build --release --features gui`
 2. Lays out `dist/Loupe.app/Contents/{MacOS,Resources,Info.plist}`
 3. `codesign` the app
-4. `hdiutil create` a UDZO image with Loupe.app and an Applications shortcut
+4. `hdiutil create` a UDZO image (`-volname "Install Loupe"`) with Loupe.app and an Applications shortcut. Settings does not list that mounted image as a plugged-in disk.
 5. With `--notarize`, `notarytool submit` the **dmg**, then staple
 6. `--pkg` is optional: a silent installer into `/Applications`
 
