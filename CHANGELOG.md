@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-18
+
 ### Added
 - Audio (mp3, m4a, and the usual sound files) and video (mp4, mov, mkv, and the usual containers). One vector per file. A clip is a frame plus the soundtrack.
 - EmbeddingGemma 2 runs in-process through LiteRT-LM. First launch downloads about 530 MB.
