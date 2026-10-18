@@ -58,7 +58,7 @@ The model is local. Search is local. Nothing about your photos leaves this Mac o
 
 | | |
 |---|---|
-| Installer | ~14 MB unsigned `.pkg` |
+| Download | ~14 MB unsigned `.dmg` — drag Loupe to Applications |
 | On-device model | EmbeddingGemma 2 Q8, ~865 MB, once |
 | Memory | sized for **16 GB** unified; 24 and 32 GB run the same model so disks stay portable |
 | Catalog | `.photo_index` on the folder or volume you chose |
@@ -67,16 +67,16 @@ The model is local. Search is local. Nothing about your photos leaves this Mac o
 
 ## Install
 
-Apple Silicon. Unsigned pkg until [issue #4](https://github.com/lavs9/loupe/issues/4).
+Apple Silicon. Unsigned disk image until [issue #4](https://github.com/lavs9/loupe/issues/4).
 
-1. Download `Loupe-0.1.0.pkg` from [Releases](https://github.com/lavs9/loupe/releases).
-2. Right-click the file, choose **Open**.
-3. Loupe sits in the menu bar. ⇧⌘Space opens search.
-4. First search downloads the model into `~/Library/Application Support/loupe/` (~865 MB). If you index a disk, a copy of the model is written onto that disk too.
+1. Download `Loupe-0.1.0.dmg` from [Releases](https://github.com/lavs9/loupe/releases).
+2. Open it. Drag **Loupe** onto **Applications**.
+3. Right-click Loupe, choose **Open**. It sits in the menu bar. ⇧⌘Space opens search.
+4. First launch downloads the model into `~/Library/Application Support/loupe/` (~865 MB). If you index a disk, a copy of the model is written onto that disk too.
 
 ```
-./scripts/package-macos.sh
-open dist/Loupe-0.1.0.pkg
+./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-0.1.0.dmg
+open dist/Loupe-0.1.0.dmg
 ```
 
 | Chord | |
@@ -127,7 +127,7 @@ cargo build                         # CLI
 cargo build --features gui          # CLI + window
 ./scripts/e2e.sh
 ./scripts/e2e-gui.sh
-./scripts/package-macos.sh
+./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-0.1.0.dmg
 ```
 
 ## Documents

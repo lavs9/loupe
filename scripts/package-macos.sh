@@ -1,21 +1,25 @@
 #!/bin/bash
-# Build Loupe.app and an installer .pkg.
+# Build Loupe.app and a drag-to-Applications .dmg.
 #
 #   ./scripts/package-macos.sh
-#       unsigned Apple Silicon pkg (right-click Open)
+#       unsigned Apple Silicon dmg
+#   ./scripts/package-macos.sh --pkg
+#       also write an unsigned .pkg (silent install into /Applications)
 #   IDENTITY_APP="Developer ID Application: Name (TEAM)" \
-#   IDENTITY_PKG="Developer ID Installer: Name (TEAM)" \
 #   APPLE_ID=... APPLE_TEAM_ID=... APPLE_APP_PASSWORD=... \
 #   ./scripts/package-macos.sh --sign --notarize
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export COPYFILE_DISABLE=1
 
 SIGN=0
 NOTARIZE=0
+WANT_PKG=0
 for arg in "$@"; do
   case "$arg" in
     --sign) SIGN=1 ;;
     --notarize) NOTARIZE=1; SIGN=1 ;;
+    --pkg) WANT_PKG=1 ;;
     *) echo "unknown flag $arg" >&2; exit 1 ;;
   esac
 done
@@ -25,6 +29,7 @@ APP_NAME="Loupe"
 BUNDLE_ID="app.loupe.gui"
 DIST="$PWD/dist"
 APP="$DIST/$APP_NAME.app"
+DMG="$DIST/$APP_NAME-$VERSION.dmg"
 PKG="$DIST/$APP_NAME-$VERSION.pkg"
 
 echo "building $APP_NAME $VERSION"
@@ -67,34 +72,45 @@ if [[ "$SIGN" -eq 1 ]]; then
     "$APP"
   codesign --verify --deep --strict "$APP"
 else
-  # Ad-hoc signature so the bundle is a valid Mach-O. Gatekeeper still
-  # wants a right-click Open until Developer ID + notarization ship.
   codesign --force --sign - --entitlements scripts/Loupe.entitlements "$APP"
 fi
 
-rm -f "$PKG"
-if [[ "$SIGN" -eq 1 ]]; then
-  : "${IDENTITY_PKG:?set IDENTITY_PKG to a Developer ID Installer identity}"
-  productbuild --component "$APP" /Applications \
-    --sign "$IDENTITY_PKG" \
-    "$PKG"
-else
-  productbuild --component "$APP" /Applications "$PKG"
+STAGE=$(mktemp -d /tmp/loupe-dmg.XXXXXX)
+ditto "$APP" "$STAGE/$APP_NAME.app"
+ln -s /Applications "$STAGE/Applications"
+rm -f "$DMG"
+hdiutil create \
+  -volname "Loupe" \
+  -srcfolder "$STAGE" \
+  -ov \
+  -format UDZO \
+  -imagekey zlib-level=9 \
+  "$DMG"
+rm -rf "$STAGE"
+
+if [[ "$WANT_PKG" -eq 1 ]]; then
+  rm -f "$PKG"
+  if [[ "$SIGN" -eq 1 ]]; then
+    : "${IDENTITY_PKG:?set IDENTITY_PKG to a Developer ID Installer identity}"
+    productbuild --component "$APP" /Applications --sign "$IDENTITY_PKG" "$PKG"
+  else
+    productbuild --component "$APP" /Applications "$PKG"
+  fi
 fi
 
 if [[ "$NOTARIZE" -eq 1 ]]; then
   : "${APPLE_ID:?}" "${APPLE_TEAM_ID:?}" "${APPLE_APP_PASSWORD:?}"
-  xcrun notarytool submit "$PKG" \
+  xcrun notarytool submit "$DMG" \
     --apple-id "$APPLE_ID" \
     --team-id "$APPLE_TEAM_ID" \
     --password "$APPLE_APP_PASSWORD" \
     --wait
-  xcrun stapler staple "$PKG"
-  spctl --assess --type install "$PKG"
+  xcrun stapler staple "$DMG"
 fi
 
 echo "app $APP"
+echo "dmg $DMG"
 [[ -f "$PKG" ]] && echo "pkg $PKG"
 if [[ "$SIGN" -eq 0 ]]; then
-  echo "unsigned: right-click the pkg, choose Open. A signed notarized pkg is later."
+  echo "unsigned: open the dmg, drag Loupe to Applications, right-click Open."
 fi

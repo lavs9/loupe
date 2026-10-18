@@ -1,10 +1,10 @@
 # Apple release checklist
 
-Goal: a Gatekeeper-clean `.pkg` that installs `Loupe.app` in `/Applications`, signed with Developer ID, notarized, stapled. Not the Mac App Store this version.
+Goal: a Gatekeeper-clean `.dmg` (Loupe.app + Applications shortcut), signed with Developer ID Application, notarized, stapled. Not the Mac App Store this version. A `.pkg` is optional (`--pkg`), not the public download.
 
 The packaging script is `scripts/package-macos.sh`. The entitlements file is `scripts/Loupe.entitlements`. Bundle id: `app.loupe.gui`.
 
-This Mac currently has **0 signing identities**. v0.1.0 ships an **unsigned** `.pkg` (right-click Open). The steps below are what turn that into a Gatekeeper-clean double-click.
+This Mac currently has **0 signing identities**. v0.1.0 ships an **unsigned** `.dmg` (drag to Applications, then right-click Open). The steps below are what turn that into a Gatekeeper-clean double-click.
 
 ## 1. Account
 
@@ -19,7 +19,7 @@ In Certificates, Identifiers & Profiles:
 
 - [ ] Identifier `app.loupe.gui` (App ID, macOS).
 - [ ] **Developer ID Application** certificate — signs `Loupe.app`.
-- [ ] **Developer ID Installer** certificate — signs the `.pkg`.
+- [ ] **Developer ID Installer** certificate — only if we also ship `--pkg`. Not needed for the dmg.
 - [ ] Download both `.cer` files, double-click into the **login** keychain.
 - [ ] `security find-identity -v -p codesigning` shows both. The names look like `Developer ID Application: Mayank Lavania (TEAMID)`.
 
@@ -63,8 +63,8 @@ APPLE_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 
 ## 6. Distribute
 
-- [x] GitHub Release on [lavs9/loupe](https://github.com/lavs9/loupe) with the unsigned v0.1.0 `.pkg`.
-- [ ] Later release with the stapled, notarized `.pkg`.
+- [x] GitHub Release on [lavs9/loupe](https://github.com/lavs9/loupe) with the unsigned v0.1.0 `.dmg`.
+- [ ] Later release with the stapled, notarized `.dmg`.
 - [ ] Update feed JSON `{version,url}` pointed at that release page. The app opens the page; it does not replace the binary yet.
 - [ ] Sparkle or a signed delta is a later version.
 
