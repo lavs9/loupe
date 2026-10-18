@@ -25,7 +25,7 @@ The full Apple account, certificate, icon, and notarization checklist is [APPLE.
 4. Create an app-specific password for notarization, or an App Store Connect API key (`AuthKey_*.p8`).
 5. Apple Team ID, e.g. `ABCD123456`. Bundle id: `app.loupe.gui`.
 
-Without those certificates `./scripts/package-macos.sh` still builds an ad-hoc-signed `.app` and an unsigned `.pkg`. Gatekeeper wants right-click Open. That unsigned pkg is the v0.1.0 GitHub Release.
+Without those certificates `./scripts/package-macos.sh` still builds an ad-hoc-signed `.app` and an unsigned `.pkg`. Gatekeeper wants right-click Open. Double-clicking Loupe.app opens the window (no CLI subcommand). That unsigned pkg is the GitHub Release.
 
 ## Build and sign
 
