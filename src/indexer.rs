@@ -271,6 +271,18 @@ pub(crate) fn preview_path(drive_root: &Path, blake3_hash: &str) -> PathBuf {
         .join(format!("{stem}.jpg"))
 }
 
+/// Writes under `.photo_index` or `Search/` are Loupe's own and must not
+/// retrigger a watch pass.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn path_is_catalog_noise(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(
+            component.as_os_str().to_str(),
+            Some(".photo_index" | "Search" | ".DS_Store")
+        )
+    })
+}
+
 fn classify_media_extension(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {

@@ -115,6 +115,17 @@ first_path() {
 
 fail() { echo "FAIL: $*" | tee -a "$REPORT"; exit 1; }
 
+grep -q 'no such table' "$REPORT" && fail "search printed a sqlite table error"
+
+for db in \
+  "$ROOT/local/.photo_index/db/catalog.db" \
+  "$ROOT/volumes/BackupHDD/.photo_index/db/catalog.db"
+do
+  sqlite3 "file:${db}?immutable=1" "SELECT name FROM sqlite_master WHERE name='vec_media';" \
+    | grep -q vec_media \
+    || fail "catalog schema was not checkpointed for search: $db"
+done
+
 bridge=$(first_path bridge)
 echo "$bridge" | grep -E -q 'frame-a.png|frame-a.heic' || fail "bridge ranked [$bridge], wanted the Golden Gate photo"
 kitchen=$(first_path kitchen)

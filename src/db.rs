@@ -83,6 +83,7 @@ impl CatalogDb {
 
         let db = Self { conn };
         db.init_schema()?;
+        db.wal_checkpoint();
         Ok(db)
     }
 
@@ -93,16 +94,38 @@ impl CatalogDb {
         }
         install_vec();
 
-        let uri = immutable_uri(db_path);
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
-        if let Ok(conn) = Connection::open_with_flags(&uri, flags) {
-            return Ok(Self { conn });
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY;
+        if let Ok(conn) = Connection::open_with_flags(db_path, flags) {
+            let db = Self { conn };
+            if db.has_vec_media() {
+                return Ok(db);
+            }
         }
 
-        let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let uri = immutable_uri(db_path);
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+        let conn = Connection::open_with_flags(&uri, flags)
             .with_context(|| format!("Failed to read catalog at {}", db_path.display()))?;
-        conn.execute_batch("PRAGMA query_only = ON;")?;
-        Ok(Self { conn })
+        let db = Self { conn };
+        if !db.has_vec_media() {
+            anyhow::bail!("index is still updating");
+        }
+        Ok(db)
+    }
+
+    pub fn wal_checkpoint(&self) {
+        let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+
+    fn has_vec_media(&self) -> bool {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE name = 'vec_media' LIMIT 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+            .is_some()
     }
 
     fn init_schema(&self) -> Result<()> {

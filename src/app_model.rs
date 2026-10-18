@@ -23,6 +23,7 @@ use crate::sources::{self, DiskMedium, SourceNote};
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_SHORTCUT: &str = "shift+super+space";
+pub const DEFAULT_UPDATE_FEED: &str = "https://lavs9.github.io/loupe/update.json";
 const DAY_SECS: u64 = 86_400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +79,9 @@ pub struct GuiSettings {
     pub update_feed: String,
     pub last_check_unix: u64,
     pub open_at_login: bool,
+    pub watch_folders: bool,
+    /// 0 = off. 1, 6, or 24 hours.
+    pub index_sweep_hours: u64,
 }
 
 pub const THEME_DARKROOM: &str = "darkroom";
@@ -116,9 +120,11 @@ pub fn load_settings() -> GuiSettings {
         shortcut: DEFAULT_SHORTCUT.to_string(),
         theme: THEME_DARKROOM.to_string(),
         check_updates: true,
-        update_feed: String::new(),
+        update_feed: DEFAULT_UPDATE_FEED.to_string(),
         last_check_unix: 0,
         open_at_login: false,
+        watch_folders: true,
+        index_sweep_hours: 6,
     };
     let Ok(text) = fs::read_to_string(settings_path()) else {
         return settings;
@@ -142,7 +148,23 @@ pub fn load_settings() -> GuiSettings {
             }
             "check_updates" => settings.check_updates = value.trim() != "false",
             "open_at_login" => settings.open_at_login = value.trim() == "true",
-            "update_feed" => settings.update_feed = value.trim().to_string(),
+            "watch_folders" => settings.watch_folders = value.trim() != "false",
+            "index_sweep_hours" => {
+                settings.index_sweep_hours = match value.trim() {
+                    "0" => 0,
+                    "1" => 1,
+                    "24" => 24,
+                    _ => 6,
+                };
+            }
+            "update_feed" => {
+                let value = value.trim();
+                settings.update_feed = if value.is_empty() {
+                    DEFAULT_UPDATE_FEED.to_string()
+                } else {
+                    value.to_string()
+                };
+            }
             "last_check_unix" => {
                 settings.last_check_unix = value.trim().parse().unwrap_or(0);
             }
@@ -158,11 +180,13 @@ pub fn save_settings(settings: &GuiSettings) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let body = format!(
-        "shortcut={}\ntheme={}\ncheck_updates={}\nopen_at_login={}\nupdate_feed={}\nlast_check_unix={}\n",
+        "shortcut={}\ntheme={}\ncheck_updates={}\nopen_at_login={}\nwatch_folders={}\nindex_sweep_hours={}\nupdate_feed={}\nlast_check_unix={}\n",
         settings.shortcut,
         settings.theme,
         if settings.check_updates { "true" } else { "false" },
         if settings.open_at_login { "true" } else { "false" },
+        if settings.watch_folders { "true" } else { "false" },
+        settings.index_sweep_hours,
         settings.update_feed,
         settings.last_check_unix,
     );
@@ -420,12 +444,20 @@ pub fn interpret_feed(body: &str, current: &str) -> UpdateReport {
             };
         }
     };
-    let Some(listed) = value.get("version").and_then(|item| item.as_str()) else {
+    let listed = value
+        .get("version")
+        .and_then(|item| item.as_str())
+        .or_else(|| value.get("tag_name").and_then(|item| item.as_str()));
+    let Some(listed) = listed else {
         return UpdateReport::Failed {
             message: "The feed has no version.".into(),
         };
     };
-    let Some(url) = value.get("url").and_then(|item| item.as_str()) else {
+    let url = value
+        .get("url")
+        .and_then(|item| item.as_str())
+        .or_else(|| value.get("html_url").and_then(|item| item.as_str()));
+    let Some(url) = url else {
         return UpdateReport::Failed {
             message: "The feed has no url.".into(),
         };
@@ -643,6 +675,7 @@ pub fn index_folder_live(
             slot.moved = tick.moved;
         }
     })?;
+    db.wal_checkpoint();
     let remember_error = sources::remember(&root).err().map(|err| err.to_string());
     Ok(IndexOutcome {
         root,
