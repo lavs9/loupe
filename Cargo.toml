@@ -1,12 +1,12 @@
 [package]
 name = "loupe"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Search photos on this Mac and on disks you plug in. The index lives next to the photos."
 
 [features]
 # The window pulls in GPUI. The command-line build stays the default.
-gui = ["dep:gpui-kit", "dep:global-hotkey", "dep:rfd", "dep:tray-icon"]
+gui = ["dep:gpui-kit", "dep:global-hotkey", "dep:rfd", "dep:tray-icon", "dep:notify"]
 
 [dependencies]
 anyhow = "1.0"
@@ -35,3 +35,4 @@ gpui-kit = { version = "0.7.3", optional = true }
 global-hotkey = { version = "0.8", optional = true }
 rfd = { version = "0.15", optional = true }
 tray-icon = { version = "0.26.1", optional = true, default-features = false }
+notify = { version = "7", optional = true }

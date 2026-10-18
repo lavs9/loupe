@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use global_hotkey::hotkey::HotKey;
@@ -47,9 +47,11 @@ use crate::app_model::{
     GuiSettings, IndexLive, IndexState, UpdateReport, APP_VERSION, THEME_DARKROOM, THEME_PAPER,
 };
 use crate::gemma::{self, FetchLive, GemmaEmbedder};
+use crate::indexer;
 use crate::lookup::RankedHit;
 use crate::menu_bar::{self, TrayCommand};
 use crate::sources::{self, DiskMedium};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 actions!(
     photo,
@@ -75,6 +77,8 @@ const RESULTS: &str = "PhotoResults";
 const PRODUCT: &str = "Loupe";
 const WORDMARK_FONT: &str = "Baskerville";
 const SEARCH_LIMIT: usize = 48;
+const WATCH_DEBOUNCE: Duration = Duration::from_secs(2);
+const WATCH_PUMP: Duration = Duration::from_millis(400);
 const TRAFFIC_LIGHT_CLEARANCE: f32 = 80.;
 const PAGE_INSET: f32 = 20.;
 const TILE_GAP: f32 = 12.;
@@ -415,8 +419,15 @@ struct PhotoApp {
     picker_task: Option<Task<()>>,
     _hotkey_task: Task<()>,
     _carousel_task: Task<()>,
+    _watch_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     parked: bool,
+    folder_watch: Option<RecommendedWatcher>,
+    watch_dirty: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+    watch_roots: Vec<PathBuf>,
+    pending_index: HashSet<PathBuf>,
+    last_sweep_unix: u64,
+    did_catch_up: bool,
 }
 
 impl PhotoApp {
@@ -426,7 +437,7 @@ impl PhotoApp {
             InputState::new(window, cx).placeholder("Describe a photo")
         });
         let feed_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("https://example.com/loupe.json")
+            InputState::new(window, cx).placeholder(app_model::DEFAULT_UPDATE_FEED)
         });
         let shortcut_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(settings.shortcut.clone())
@@ -434,6 +445,10 @@ impl PhotoApp {
         let saved_shortcut = settings.shortcut.clone();
         shortcut_input.update(cx, |state, cx| {
             state.replace_all(saved_shortcut, window, cx);
+        });
+        let saved_feed = settings.update_feed.clone();
+        feed_input.update(cx, |state, cx| {
+            state.replace_all(saved_feed, window, cx);
         });
         let closer = cx.weak_entity();
         window.on_window_should_close(cx, move |_window, cx| {
@@ -582,12 +597,21 @@ impl PhotoApp {
                     });
                 }
             }),
+            _watch_task: None,
             _subscriptions: vec![subscription, focus_lost],
+            folder_watch: None,
+            watch_dirty: Arc::new(Mutex::new(HashMap::new())),
+            watch_roots: Vec::new(),
+            pending_index: HashSet::new(),
+            last_sweep_unix: app_model::unix_now(),
+            did_catch_up: false,
         };
         if due {
             app.spawn_update(cx);
         }
         app.start_model_fetch(cx);
+        app.start_folder_watch(cx);
+        app.queue_catch_up(cx);
         if app.settings.open_at_login {
             if let Err(err) = menu_bar::set_open_at_login(true) {
                 eprintln!("open at login: {err}");
@@ -1047,6 +1071,8 @@ impl PhotoApp {
                     }
                 }
                 view.reload_rows();
+                view.sync_folder_watch();
+                view.drain_pending_index(cx);
                 cx.notify();
             });
         }));
@@ -1061,6 +1087,185 @@ impl PhotoApp {
             }
             Err(err) => self.status = err.to_string().into(),
         }
+    }
+
+    fn start_folder_watch(&mut self, cx: &mut Context<Self>) {
+        self.sync_folder_watch();
+        self._watch_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(WATCH_PUMP).await;
+                let _ = this.update(cx, |view, cx| view.pump_watch(cx));
+            }
+        }));
+    }
+
+    fn pump_watch(&mut self, cx: &mut Context<Self>) {
+        self.sync_folder_watch();
+        if self.fetching {
+            return;
+        }
+        let now = Instant::now();
+        let mut due = Vec::new();
+        if self.settings.watch_folders {
+            if let Ok(mut dirty) = self.watch_dirty.lock() {
+                dirty.retain(|path, at| {
+                    if now.saturating_duration_since(*at) >= WATCH_DEBOUNCE {
+                        due.push(path.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
+        let hours = self.settings.index_sweep_hours;
+        if hours > 0 {
+            let elapsed = app_model::unix_now().saturating_sub(self.last_sweep_unix);
+            if elapsed >= hours.saturating_mul(3600) {
+                self.last_sweep_unix = app_model::unix_now();
+                for row in &self.rows {
+                    if matches!(row.index, IndexState::Ready { .. })
+                        && sources::path_on_live_volume(&row.path)
+                    {
+                        due.push(row.path.clone());
+                    }
+                }
+            }
+        }
+        due.sort();
+        due.dedup();
+        for path in due {
+            self.queue_index(path, cx);
+        }
+    }
+
+    fn sync_folder_watch(&mut self) {
+        if !self.settings.watch_folders {
+            self.folder_watch = None;
+            self.watch_roots.clear();
+            if let Ok(mut dirty) = self.watch_dirty.lock() {
+                dirty.clear();
+            }
+            return;
+        }
+        let mut roots: Vec<PathBuf> = self
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(row.index, IndexState::Ready { .. })
+                    && sources::path_on_live_volume(&row.path)
+            })
+            .map(|row| row.path.clone())
+            .collect();
+        roots.sort();
+        roots.dedup();
+        if self.folder_watch.is_some() && roots == self.watch_roots {
+            return;
+        }
+        self.folder_watch = None;
+        if roots.is_empty() {
+            self.watch_roots.clear();
+            return;
+        }
+        let dirty = Arc::clone(&self.watch_dirty);
+        let watched = roots.clone();
+        let mut watcher = match notify::recommended_watcher(move |res: Result<notify::Event, _>| {
+            let Ok(event) = res else {
+                return;
+            };
+            if matches!(event.kind, EventKind::Access(_)) {
+                return;
+            }
+            for path in &event.paths {
+                if indexer::path_is_catalog_noise(path) {
+                    continue;
+                }
+                let Some(root) = watched.iter().find(|root| path.starts_with(root)) else {
+                    continue;
+                };
+                if let Ok(mut map) = dirty.lock() {
+                    map.insert(root.clone(), Instant::now());
+                }
+            }
+        }) {
+            Ok(watcher) => watcher,
+            Err(_) => return,
+        };
+        for root in &roots {
+            let _ = watcher.watch(root, RecursiveMode::Recursive);
+        }
+        self.folder_watch = Some(watcher);
+        self.watch_roots = roots;
+    }
+
+    fn queue_index(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.fetching || gemma::needs_fetch() {
+            self.pending_index.insert(path);
+            return;
+        }
+        if !sources::path_on_live_volume(&path) {
+            return;
+        }
+        if self.indexing_path.as_ref() == Some(&path) || self.busy {
+            self.pending_index.insert(path);
+            return;
+        }
+        self.start_index(path, cx);
+    }
+
+    fn drain_pending_index(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let next = self.pending_index.iter().next().cloned();
+        if let Some(path) = next {
+            self.pending_index.remove(&path);
+            self.queue_index(path, cx);
+        }
+    }
+
+    fn queue_catch_up(&mut self, cx: &mut Context<Self>) {
+        if self.did_catch_up {
+            return;
+        }
+        if self.fetching || gemma::needs_fetch() {
+            return;
+        }
+        if !self.settings.watch_folders && self.settings.index_sweep_hours == 0 {
+            return;
+        }
+        self.did_catch_up = true;
+        self.last_sweep_unix = app_model::unix_now();
+        let paths: Vec<PathBuf> = self
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(row.index, IndexState::Ready { .. })
+                    && sources::path_on_live_volume(&row.path)
+            })
+            .map(|row| row.path.clone())
+            .collect();
+        for path in paths {
+            self.queue_index(path, cx);
+        }
+    }
+
+    fn set_watch_folders(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.settings.watch_folders = enabled;
+        if let Err(err) = save_settings(&self.settings) {
+            self.status = err.to_string().into();
+        }
+        self.sync_folder_watch();
+        cx.notify();
+    }
+
+    fn set_sweep_hours(&mut self, hours: u64, cx: &mut Context<Self>) {
+        self.settings.index_sweep_hours = hours;
+        self.last_sweep_unix = app_model::unix_now();
+        if let Err(err) = save_settings(&self.settings) {
+            self.status = err.to_string().into();
+        }
+        cx.notify();
     }
 
     fn start_model_fetch(&mut self, cx: &mut Context<Self>) {
@@ -1121,6 +1326,7 @@ impl PhotoApp {
                         view.fetch_frac = 100.;
                         view.fetch_note = "EmbeddingGemma 2 is on this Mac.".into();
                         view.status = "Model ready.".into();
+                        view.queue_catch_up(cx);
                     }
                     Err(err) => {
                         view.fetch_note = format!("Could not download the model. {err}").into();
@@ -1202,9 +1408,9 @@ impl PhotoApp {
     }
 
     fn clear_feed(&mut self, cx: &mut Context<Self>) {
-        self.settings.update_feed.clear();
+        self.settings.update_feed = app_model::DEFAULT_UPDATE_FEED.to_string();
         self.release_url = None;
-        self.update_line = "Cleared the update feed. The check stays on this Mac.".into();
+        self.update_line = "Using the GitHub feed.".into();
         if let Err(err) = save_settings(&self.settings) {
             self.update_line = err.to_string();
         }
@@ -2697,6 +2903,80 @@ impl PhotoApp {
                                     ),
                             )
                             .child(
+                                GroupBox::new()
+                                    .id("index-keep-up-box")
+                                    .outline()
+                                    .w(px(inner_w))
+                                    .title("Keeping up to date")
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .child("New photos are indexed while Loupe sits in the menu bar. Unplugged disks wait until they return."),
+                                    )
+                                    .child(
+                                        Checkbox::new("watch-folders")
+                                            .label("Watch folders")
+                                            .checked(self.settings.watch_folders)
+                                            .on_change(cx.listener(|this, checked, _, cx| {
+                                                this.set_watch_folders(*checked, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .text_sm()
+                                            .text_color(muted)
+                                            .child("Sweep catches copies the watcher missed."),
+                                    )
+                                    .child(
+                                        ToggleGroup::new("index-sweep")
+                                            .segmented()
+                                            .outline()
+                                            .child(
+                                                Toggle::new(0)
+                                                    .label("Off")
+                                                    .checked(self.settings.index_sweep_hours == 0),
+                                            )
+                                            .child(
+                                                Toggle::new(1)
+                                                    .label("1 hour")
+                                                    .checked(self.settings.index_sweep_hours == 1),
+                                            )
+                                            .child(
+                                                Toggle::new(2)
+                                                    .label("6 hours")
+                                                    .checked(self.settings.index_sweep_hours == 6),
+                                            )
+                                            .child(
+                                                Toggle::new(3)
+                                                    .label("Daily")
+                                                    .checked(self.settings.index_sweep_hours == 24),
+                                            )
+                                            .on_click(cx.listener(|this, states: &Vec<bool>, _, cx| {
+                                                let hours = if states.get(3).copied().unwrap_or(false)
+                                                    && this.settings.index_sweep_hours != 24
+                                                {
+                                                    24
+                                                } else if states.get(2).copied().unwrap_or(false)
+                                                    && this.settings.index_sweep_hours != 6
+                                                {
+                                                    6
+                                                } else if states.get(1).copied().unwrap_or(false)
+                                                    && this.settings.index_sweep_hours != 1
+                                                {
+                                                    1
+                                                } else if states.first().copied().unwrap_or(false)
+                                                    && this.settings.index_sweep_hours != 0
+                                                {
+                                                    0
+                                                } else {
+                                                    return;
+                                                };
+                                                this.set_sweep_hours(hours, cx);
+                                            })),
+                                    ),
+                            )
+                            .child(
                                 h_flex()
                                     .items_start()
                                     .w(px(inner_w))
@@ -2736,7 +3016,7 @@ impl PhotoApp {
                                             .child(
                                                 div()
                                                     .w_full()
-                                                    .child(format!("This copy is {APP_VERSION}. The check reads one small JSON file.")),
+                                                    .child(format!("This copy is {APP_VERSION}. Once a day it checks GitHub for a newer disk image.")),
                                             )
                                             .child(div().w_full().text_xs().text_color(muted).child(self.update_line.clone()))
                                             .child(Input::new(&self.feed_input))

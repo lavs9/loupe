@@ -74,7 +74,7 @@ A LaunchAgent start at login follows the same path. The fetch is skipped when th
 
 ## Updates
 
-The in-app update feed is a JSON `{version,url}` that opens a release page. It does not replace the binary. Sparkle or a signed delta is a later version, after the first signed pkg is in people’s hands.
+The in-app update feed is `docs/update.json` on Pages (`https://lavs9.github.io/loupe/update.json`). It is `{version,url}`. Bump `version` when you tag a release. `url` is the GitHub release page. The app does not replace the binary. Sparkle or a signed delta is a later version, after the first signed installer is in people’s hands.
 
 ## Not this version
 

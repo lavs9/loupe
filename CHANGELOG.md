@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.2] - 2026-10-18
+
+### Added
+- Settings: Watch folders, plus a sweep (Off / 1 hour / 6 hours / Daily). New photos are indexed while Loupe sits in the menu bar.
+- In-app update check defaults to `https://lavs9.github.io/loupe/update.json` (GitHub releases).
+
+### Fixed
+- Searching a folder that is still being indexed no longer shows `no such table: vec_media`. The other folders still answer.
+
 ## [0.1.1] - 2026-10-18
 
 ### Fixed

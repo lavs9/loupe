@@ -37,7 +37,7 @@ pub fn search_catalogs(
     for catalog in &set.catalogs {
         match search_one(catalog, &query_vec, &parsed, limit) {
             Ok(hits) => ranked.extend(hits),
-            Err(err) => errors.push(format!("{}: {err}", catalog.label)),
+            Err(err) => errors.push(catalog_search_error(&catalog.label, &err)),
         }
     }
 
@@ -63,6 +63,19 @@ fn search_one(
         .into_iter()
         .map(|hit| ranked_hit(catalog, hit))
         .collect())
+}
+
+fn catalog_search_error(label: &str, err: &anyhow::Error) -> String {
+    let text = err.to_string();
+    if text.contains("still updating")
+        || text.contains("vec_media")
+        || text.contains("no such table")
+        || text.contains("no such module")
+    {
+        format!("{label} is still updating. Search the other folders, or press Update.")
+    } else {
+        format!("{label}: {err}")
+    }
 }
 
 fn ranked_hit(catalog: &Catalog, hit: SearchHit) -> RankedHit {
