@@ -25,7 +25,7 @@
 <p align="center">
   <a href="https://lavs9.github.io/loupe/">Website</a>
   ·
-  <a href="https://github.com/lavs9/loupe/releases/latest">Download</a>
+  <a href="https://github.com/lavs9/loupe/releases/download/v0.1.0/Loupe-0.1.0.dmg">Download</a>
   ·
   <a href="SPEC.md">Spec</a>
 </p>
@@ -69,7 +69,7 @@ The model is local. Search is local. Nothing about your photos leaves this Mac o
 
 Apple Silicon. Unsigned disk image until [issue #4](https://github.com/lavs9/loupe/issues/4).
 
-1. Download `Loupe-0.1.0.dmg` from [Releases](https://github.com/lavs9/loupe/releases).
+1. Download [Loupe-0.1.0.dmg](https://github.com/lavs9/loupe/releases/download/v0.1.0/Loupe-0.1.0.dmg).
 2. Open it. Drag **Loupe** onto **Applications**.
 3. Right-click Loupe, choose **Open**. It sits in the menu bar. ⇧⌘Space opens search.
 4. First launch downloads the model into `~/Library/Application Support/loupe/` (~865 MB). If you index a disk, a copy of the model is written onto that disk too.
