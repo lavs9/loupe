@@ -59,10 +59,10 @@ The model is local. Search is local. Nothing about your photos leaves this Mac o
 | | |
 |---|---|
 | Download | ~14 MB unsigned `.dmg` — drag Loupe to Applications |
-| On-device model | EmbeddingGemma 2 Q8, ~865 MB, once |
+| On-device model | EmbeddingGemma 2, ~530 MB, once |
 | Memory | sized for **16 GB** unified; 24 and 32 GB run the same model so disks stay portable |
 | Catalog | `.photo_index` on the folder or volume you chose |
-| Formats | JPEG, HEIC, PNG, TIFF, WebP, GIF, AVIF, RAW |
+| Formats | Photos, RAW, mp3 and other audio, mp4/mov/mkv and other video |
 | Network | photos, queries, and the model stay here |
 
 ## Install
@@ -72,7 +72,7 @@ Apple Silicon. Unsigned disk image until [issue #4](https://github.com/lavs9/lou
 1. Download [Loupe.dmg](https://github.com/lavs9/loupe/releases/latest/download/Loupe.dmg).
 2. Open it. Drag **Loupe** onto **Applications**.
 3. Right-click Loupe, choose **Open**. It sits in the menu bar. ⇧⌘Space opens search.
-4. First launch downloads the model into `~/Library/Application Support/loupe/` (~865 MB). If you index a disk, a copy of the model is written onto that disk too.
+4. First launch downloads the model into `~/Library/Application Support/loupe/` (~530 MB). If you index a disk, a copy of the model is written onto that disk too.
 
 ```
 ./scripts/package-macos.sh          # dist/Loupe.app + dist/Loupe-<version>.dmg + dist/Loupe.dmg

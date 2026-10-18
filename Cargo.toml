@@ -19,6 +19,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 jwalk = "0.8"
 kamadak-exif = "0.5"
 libc = "0.2"
+libloading = "0.8"
 nfsserve = "0.11.0"
 rayon = "1.10"
 regex = "1.11"
@@ -36,3 +37,6 @@ global-hotkey = { version = "0.8", optional = true }
 rfd = { version = "0.15", optional = true }
 tray-icon = { version = "0.26.1", optional = true, default-features = false }
 notify = { version = "7", optional = true }
+pdf-extract = "0.12"
+id3 = "1.17"
+zip = { version = "2", default-features = false, features = ["deflate"] }

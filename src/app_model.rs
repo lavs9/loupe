@@ -20,6 +20,7 @@ use crate::embedder::MultimodalEmbedder;
 use crate::indexer::{run_incremental_index, IndexReport, ScanTick};
 use crate::lookup::{search_catalogs, RankedHit};
 use crate::sources::{self, DiskMedium, SourceNote};
+use tracing::info;
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_SHORTCUT: &str = "shift+super+space";
@@ -667,21 +668,76 @@ pub fn index_folder_live(
     crate::gemma::publish_models(&root)?;
     let db_path = root.join(".photo_index/db/catalog.db");
     let mut db = CatalogDb::open(&db_path)?;
-    let report = run_incremental_index(&root, &mut db, embedder, &mut |tick: ScanTick| {
-        if let Ok(mut slot) = live.lock() {
-            slot.file = tick.file;
-            slot.embedded = tick.embedded;
-            slot.unchanged = tick.unchanged;
-            slot.moved = tick.moved;
-        }
-    })?;
-    db.wal_checkpoint();
+    let report = if db.model_mismatch(embedder.model_version())? {
+        rebuild_catalog_then_swap(&root, &db_path, db, embedder, live)?
+    } else {
+        let report = run_incremental_index(&root, &mut db, embedder, &mut |tick: ScanTick| {
+            record_index_tick(live, tick);
+        })?;
+        db.wal_checkpoint();
+        report
+    };
+    crate::gemma::retire_llama_runtime();
     let remember_error = sources::remember(&root).err().map(|err| err.to_string());
     Ok(IndexOutcome {
         root,
         report,
         remember_error,
     })
+}
+
+fn record_index_tick(live: &Arc<Mutex<IndexLive>>, tick: ScanTick) {
+    if let Ok(mut slot) = live.lock() {
+        slot.file = tick.file;
+        slot.embedded = tick.embedded;
+        slot.unchanged = tick.unchanged;
+        slot.moved = tick.moved;
+    }
+}
+
+/// Build the new model into `catalog.rebuild.db`. Replace `catalog.db` only
+/// after that scan finishes. The previous index stays on disk until then.
+fn rebuild_catalog_then_swap(
+    root: &Path,
+    db_path: &Path,
+    db: CatalogDb,
+    embedder: &dyn MultimodalEmbedder,
+    live: &Arc<Mutex<IndexLive>>,
+) -> Result<IndexReport> {
+    let old_assets = db.stats()?.assets;
+    info!(
+        "Catalog was built with a different model. Indexing into a new catalog, then deleting the old one."
+    );
+    drop(db);
+
+    let rebuild_path = db_path.with_file_name("catalog.rebuild.db");
+    CatalogDb::remove_sqlite_files(&rebuild_path);
+    let mut rebuild = CatalogDb::open(&rebuild_path)?;
+    let report = match run_incremental_index(root, &mut rebuild, embedder, &mut |tick: ScanTick| {
+        record_index_tick(live, tick);
+    }) {
+        Ok(report) => report,
+        Err(err) => {
+            drop(rebuild);
+            CatalogDb::remove_sqlite_files(&rebuild_path);
+            return Err(err);
+        }
+    };
+    rebuild.wal_checkpoint();
+    let new_assets = rebuild.stats()?.assets;
+    drop(rebuild);
+
+    if old_assets > 0 && new_assets == 0 {
+        CatalogDb::remove_sqlite_files(&rebuild_path);
+        bail!("the new index was empty; the previous index was kept");
+    }
+
+    CatalogDb::swap_sqlite(db_path, &rebuild_path)?;
+    info!(
+        "New index is on {}. The previous catalog was deleted.",
+        embedder.model_version()
+    );
+    Ok(report)
 }
 
 pub fn search_photos(embedder: &dyn MultimodalEmbedder, query: &str, limit: usize) -> Result<SearchOutcome> {
@@ -780,7 +836,11 @@ pub fn write_preview(photo: &Path, destination: &Path) -> Result<()> {
 }
 
 fn write_preview_edge(photo: &Path, destination: &Path, edge: u32) -> Result<()> {
-    let Some((bytes, _)) = crate::embedder::image_for_embedding(photo)? else {
+    let bytes = if let Some((bytes, _)) = crate::embedder::image_for_embedding(photo)? {
+        bytes
+    } else if let Some(bytes) = crate::documents::quicklook_image(photo) {
+        bytes
+    } else {
         bail!("this file has no image to preview");
     };
     let image = image::load_from_memory(&bytes)

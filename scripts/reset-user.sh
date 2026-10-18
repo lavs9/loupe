@@ -8,7 +8,7 @@ set -euo pipefail
 STATE="$HOME/Library/Application Support/loupe"
 LAUNCH="$HOME/Library/LaunchAgents/app.loupe.gui.plist"
 
-echo "stopping Loupe and llama-server for the user profile"
+echo "stopping Loupe and the embedder for the user profile"
 if [[ -f "$LAUNCH" ]]; then
   launchctl unload "$LAUNCH" 2>/dev/null || true
   rm -f "$LAUNCH"

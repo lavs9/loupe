@@ -58,6 +58,9 @@ fn search_one(
     limit: usize,
 ) -> Result<Vec<RankedHit>> {
     let db = CatalogDb::open_readonly(&catalog.db_path)?;
+    if db.model_mismatch(crate::embedder::MODEL_ID)? {
+        anyhow::bail!("index is still updating");
+    }
     let hits = db.search_hybrid(query_vec, parsed, limit)?;
     Ok(hits
         .into_iter()

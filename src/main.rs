@@ -1,7 +1,9 @@
 mod app_model;
 mod db;
+mod documents;
 mod embedder;
 mod gemma;
+mod litert;
 #[cfg(feature = "gui")]
 mod gui;
 #[cfg(feature = "gui")]
@@ -60,7 +62,7 @@ enum Commands {
     },
     /// How many photos each connected index holds.
     Status,
-    /// Load EmbeddingGemma and leave it running. Prints `ready <url>` when it answers.
+    /// Load EmbeddingGemma and leave it running. Prints `ready litert` when it answers.
     Serve {
         /// TCP port. 0 picks a free port.
         #[arg(long, default_value_t = 0)]

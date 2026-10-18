@@ -46,6 +46,7 @@ use crate::app_model::{
     save_settings, search_photos, update_is_due, write_preview, Chord, ChordKey, DiskKind, FolderRow,
     GuiSettings, IndexLive, IndexState, UpdateReport, APP_VERSION, THEME_DARKROOM, THEME_PAPER,
 };
+use crate::embedder::MODEL_ID;
 use crate::gemma::{self, FetchLive, GemmaEmbedder};
 use crate::indexer;
 use crate::lookup::RankedHit;
@@ -434,7 +435,7 @@ impl PhotoApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = app_model::load_settings();
         let query_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Describe a photo")
+            InputState::new(window, cx).placeholder("Describe a photo, a file, a clip")
         });
         let feed_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(app_model::DEFAULT_UPDATE_FEED)
@@ -612,6 +613,7 @@ impl PhotoApp {
         app.start_model_fetch(cx);
         app.start_folder_watch(cx);
         app.queue_catch_up(cx);
+        app.queue_stale_catalogs(cx);
         if app.settings.open_at_login {
             if let Err(err) = menu_bar::set_open_at_login(true) {
                 eprintln!("open at login: {err}");
@@ -1250,6 +1252,29 @@ impl PhotoApp {
         }
     }
 
+    /// Folders whose catalog is still on the previous embedder. Search skips
+    /// them until Index finishes. This runs even when watch and sweep are off.
+    fn queue_stale_catalogs(&mut self, cx: &mut Context<Self>) {
+        if self.fetching || gemma::needs_fetch() {
+            return;
+        }
+        let paths: Vec<PathBuf> = self
+            .rows
+            .iter()
+            .filter(|row| match &row.index {
+                IndexState::Ready { model, .. } => {
+                    model.as_deref() != Some(MODEL_ID)
+                        && sources::path_on_live_volume(&row.path)
+                }
+                _ => false,
+            })
+            .map(|row| row.path.clone())
+            .collect();
+        for path in paths {
+            self.queue_index(path, cx);
+        }
+    }
+
     fn set_watch_folders(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.settings.watch_folders = enabled;
         if let Err(err) = save_settings(&self.settings) {
@@ -1327,6 +1352,7 @@ impl PhotoApp {
                         view.fetch_note = "EmbeddingGemma 2 is on this Mac.".into();
                         view.status = "Model ready.".into();
                         view.queue_catch_up(cx);
+                        view.queue_stale_catalogs(cx);
                     }
                     Err(err) => {
                         view.fetch_note = format!("Could not download the model. {err}").into();
@@ -1790,7 +1816,7 @@ impl PhotoApp {
                             )
                             .description(
                                 EmptyDescription::new().child(
-                                    "About 865 MB, once. You can hide this window. Loupe stays in the menu bar — come back when the download finishes.",
+                                    "About 530 MB, once. You can hide this window. Loupe stays in the menu bar — come back when the download finishes.",
                                 ),
                             ),
                     )
@@ -2828,9 +2854,9 @@ impl PhotoApp {
                                         div().w_full().child(if self.fetching {
                                             self.fetch_note.to_string()
                                         } else if gemma::weights_on_disk().is_some() {
-                                            "EmbeddingGemma 2 is on this Mac. llama-server starts on the first search or index.".to_string()
+                                            "EmbeddingGemma 2 is on this Mac. It starts on the first search or index.".to_string()
                                         } else {
-                                            "The model downloads on first launch (~865 MB). You can hide the window; Loupe stays in the menu bar.".to_string()
+                                            "The model downloads on first launch (~530 MB). You can hide the window; Loupe stays in the menu bar.".to_string()
                                         }),
                                     )
                                     .children(self.fetching.then(|| {

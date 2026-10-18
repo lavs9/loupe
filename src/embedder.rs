@@ -8,17 +8,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::db::EMBED_DIM;
 use crate::preview::largest_embedded_jpeg;
 
-/// EmbeddingGemma 2, 8-bit text and vision, Matryoshka-truncated to 256.
+/// EmbeddingGemma 2 740M via LiteRT-LM, Matryoshka-truncated to 256.
 ///
 /// The model emits 768 values. The catalog stores the first 256, normalized
 /// again, which is the truncation EmbeddingGemma 2 was trained for.
-pub const MODEL_ID: &str = "embeddinggemma-2-q8-256";
+pub const MODEL_ID: &str = "embeddinggemma-2-litert-740m-256";
 
 pub trait MultimodalEmbedder: Send + Sync {
     fn model_version(&self) -> &str;
     /// `Ok(None)` means the file has no decodable pixels and should be skipped.
     fn embed_image(&self, image_path: &Path) -> Result<Option<[f32; EMBED_DIM]>>;
+    /// `Ok(None)` means the file has no decodable waveform.
+    fn embed_audio(&self, audio_path: &Path) -> Result<Option<[f32; EMBED_DIM]>>;
+    /// One vector from a still and/or a soundtrack. Used for video.
+    fn embed_multimodal(
+        &self,
+        image: Option<&[u8]>,
+        audio: Option<&[u8]>,
+    ) -> Result<Option<[f32; EMBED_DIM]>>;
     fn embed_text(&self, text: &str) -> Result<[f32; EMBED_DIM]>;
+    fn embed_document(&self, text: &str) -> Result<[f32; EMBED_DIM]>;
 }
 
 /// Decode a photo to a preview that fits in 384×384, keeping its shape.
