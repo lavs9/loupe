@@ -10,32 +10,31 @@ use anyhow::{anyhow, Result};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{h_flex, v_flex, Disableable, Selectable, StyledExt};
+use gpui_kit::base::{h_flex, v_flex, StyledExt};
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{
-    Button, ButtonVariant, ButtonVariants, Toggle, ToggleGroup, ToggleVariants,
-};
 use gpui_kit::component::carousel::{
     Carousel, CarouselContent, CarouselItem, CarouselPagination, CarouselPaginationItem,
     CarouselState,
 };
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::empty::{
     Empty as EmptyState, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia,
     EmptyMediaVariant, EmptyTitle,
 };
-use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::{ScrollableElement, Scrollbar};
 use gpui_kit::component::skeleton::Skeleton;
-use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
-    v_virtual_list, ActiveTheme, Sizable, Theme, ThemeMode, TitleBar, VirtualListScrollHandle,
+    v_virtual_list, ActiveTheme, Sizable, TitleBar, VirtualListScrollHandle,
+};
+use gpui_apple_hig::{
+    apply_apple_theme, MacAccentColor, MacBadge,
+    MacButton, MacButtonVariant, MacKbd,
+    MacSearchField, MacSegment, MacSegmentedControl, MacSettingsGroup, MacSettingsRow, MacStatusBar,
+    MacSwitch, MacToolbar, MacTypographyExt,
 };
 use gpui_kit::*;
 
@@ -44,7 +43,8 @@ use crate::app_model::{
     index_failure, index_folder_live, index_summary, open_path, open_url, parse_chord, release_url,
     reveal_path,
     save_settings, search_photos, update_is_due, write_preview, Chord, ChordKey, DiskKind, FolderRow,
-    GuiSettings, IndexLive, IndexState, UpdateReport, APP_VERSION, THEME_DARKROOM, THEME_PAPER,
+    GuiSettings, IndexLive, IndexState, UpdateReport, APP_VERSION, THEME_DARK, THEME_DARKROOM,
+    THEME_LIGHT, THEME_PAPER,
 };
 use crate::embedder::MODEL_ID;
 use crate::gemma::{self, FetchLive, GemmaEmbedder};
@@ -76,7 +76,6 @@ actions!(
 const SEARCH: &str = "PhotoSearch";
 const RESULTS: &str = "PhotoResults";
 const PRODUCT: &str = "Loupe";
-const WORDMARK_FONT: &str = "Baskerville";
 const SEARCH_LIMIT: usize = 48;
 const WATCH_DEBOUNCE: Duration = Duration::from_secs(2);
 const WATCH_PUMP: Duration = Duration::from_millis(400);
@@ -87,9 +86,9 @@ const SHEET_PAD: f32 = 24.;
 const SHEET_MIN_LAYOUT: f32 = 80.;
 const SHEET_FALLBACK_INNER: f32 = 880.;
 const SHEET_MIN_INNER: f32 = 300.;
-const TITLE_CHROME: f32 = 34.;
+const TITLE_CHROME: f32 = 52.;
 const SEARCH_BAR_HEIGHT: f32 = 52.;
-const STATUS_BAR_HEIGHT: f32 = 36.;
+const STATUS_BAR_HEIGHT: f32 = 28.;
 const INDEX_BANNER_HEIGHT: f32 = 40.;
 const LIST_ROW_HEIGHT: f32 = 88.;
 const TILE_CAPTION: f32 = 40.;
@@ -169,181 +168,8 @@ fn note(line: &str) {
 }
 
 fn apply_named_theme(name: &str, cx: &mut App) {
-    if name == THEME_PAPER {
-        apply_paper_theme(cx);
-    } else {
-        apply_darkroom_theme(cx);
-    }
-}
-
-fn apply_darkroom_theme(cx: &mut App) {
-    Theme::change(ThemeMode::Dark, None, cx);
-    Theme::update(cx, |theme| {
-        let void: Hsla = rgb(0x161411).into();
-        let table: Hsla = rgb(0x1C1915).into();
-        let hairline: Hsla = rgb(0x3C342C).into();
-        let paper: Hsla = rgb(0xEDE6DA).into();
-        let mute: Hsla = rgb(0x9A9186).into();
-        let safelight: Hsla = rgb(0xD4923A).into();
-        let safelight_hot: Hsla = rgb(0xE0A24A).into();
-        let safelight_deep: Hsla = rgb(0xC07E2C).into();
-        let ink: Hsla = rgb(0x140F0A).into();
-        let wash: Hsla = rgb(0x26211C).into();
-        let danger: Hsla = rgb(0xC45C3E).into();
-        let moss: Hsla = rgb(0x7A9A62).into();
-
-        theme.colors.background = void;
-        theme.colors.foreground = paper;
-        theme.colors.title_bar = void;
-        theme.colors.title_bar_border = hairline;
-        theme.colors.status_bar = void;
-        theme.colors.status_bar_border = hairline;
-        theme.colors.border = hairline;
-        theme.colors.window_border = hairline;
-        theme.colors.muted = wash;
-        theme.colors.muted_foreground = mute;
-        theme.colors.primary = safelight;
-        theme.colors.primary_foreground = ink;
-        theme.colors.primary_hover = safelight_hot;
-        theme.colors.primary_active = safelight_deep;
-        theme.colors.button_primary = safelight;
-        theme.colors.button_primary_foreground = ink;
-        theme.colors.button_primary_hover = safelight_hot;
-        theme.colors.button_primary_active = safelight_deep;
-        theme.colors.accent = rgb(0x2A241C).into();
-        theme.colors.accent_foreground = paper;
-        theme.colors.secondary = wash;
-        theme.colors.secondary_foreground = paper;
-        theme.colors.secondary_hover = rgb(0x322C26).into();
-        theme.colors.secondary_active = rgb(0x3A332C).into();
-        theme.colors.button_secondary = wash;
-        theme.colors.button_secondary_foreground = paper;
-        theme.colors.button_secondary_hover = rgb(0x322C26).into();
-        theme.colors.button_secondary_active = rgb(0x3A332C).into();
-        theme.colors.ring = safelight;
-        theme.colors.caret = safelight;
-        theme.colors.selection = safelight.opacity(0.28);
-        theme.colors.input = hairline;
-        theme.colors.popover = table;
-        theme.colors.popover_foreground = paper;
-        theme.colors.list = void;
-        theme.colors.list_hover = wash;
-        theme.colors.list_active = rgb(0x2A241C).into();
-        theme.colors.list_active_border = safelight;
-        theme.colors.danger = danger;
-        theme.colors.danger_foreground = paper;
-        theme.colors.danger_hover = rgb(0xD46A4A).into();
-        theme.colors.success = moss;
-        theme.colors.success_foreground = paper;
-        theme.colors.sidebar = void;
-        theme.colors.sidebar_foreground = paper;
-        theme.colors.sidebar_border = hairline;
-        theme.colors.sidebar_accent = wash;
-        theme.colors.sidebar_accent_foreground = paper;
-        theme.colors.sidebar_primary = safelight;
-        theme.colors.sidebar_primary_foreground = ink;
-        theme.colors.group_box = table;
-        theme.colors.group_box_foreground = paper;
-        theme.colors.progress_bar = safelight;
-        theme.colors.scrollbar = void;
-        theme.colors.scrollbar_thumb = rgb(0x4A433A).into();
-        theme.colors.scrollbar_thumb_hover = rgb(0x5A5348).into();
-        theme.colors.link = safelight;
-        theme.colors.link_hover = safelight_hot;
-        theme.colors.tab = void;
-        theme.colors.tab_active = wash;
-        theme.colors.tab_active_foreground = paper;
-        theme.colors.tab_foreground = mute;
-        theme.colors.tab_bar = void;
-        theme.radius = px(4.);
-        theme.radius_lg = px(8.);
-        theme.shadow = false;
-    });
-}
-
-fn apply_paper_theme(cx: &mut App) {
-    Theme::change(ThemeMode::Light, None, cx);
-    Theme::update(cx, |theme| {
-        let paper: Hsla = rgb(0xF3EEE4).into();
-        let sheet: Hsla = rgb(0xEBE6DC).into();
-        let hairline: Hsla = rgb(0xC9C0B2).into();
-        let ink: Hsla = rgb(0x1A1612).into();
-        let mute: Hsla = rgb(0x6F675C).into();
-        let safelight: Hsla = rgb(0xC07E2C).into();
-        let safelight_hot: Hsla = rgb(0xD4923A).into();
-        let safelight_deep: Hsla = rgb(0xA86C22).into();
-        let wash: Hsla = rgb(0xE4DCCE).into();
-        let danger: Hsla = rgb(0xB44A32).into();
-        let moss: Hsla = rgb(0x4E7A3C).into();
-        let cream: Hsla = rgb(0xFFF8EE).into();
-
-        theme.colors.background = paper;
-        theme.colors.foreground = ink;
-        theme.colors.title_bar = sheet;
-        theme.colors.title_bar_border = hairline;
-        theme.colors.status_bar = sheet;
-        theme.colors.status_bar_border = hairline;
-        theme.colors.border = hairline;
-        theme.colors.window_border = hairline;
-        theme.colors.muted = wash;
-        theme.colors.muted_foreground = mute;
-        theme.colors.primary = safelight;
-        theme.colors.primary_foreground = cream;
-        theme.colors.primary_hover = safelight_hot;
-        theme.colors.primary_active = safelight_deep;
-        theme.colors.button_primary = safelight;
-        theme.colors.button_primary_foreground = cream;
-        theme.colors.button_primary_hover = safelight_hot;
-        theme.colors.button_primary_active = safelight_deep;
-        theme.colors.accent = rgb(0xE8DCC8).into();
-        theme.colors.accent_foreground = ink;
-        theme.colors.secondary = wash;
-        theme.colors.secondary_foreground = ink;
-        theme.colors.secondary_hover = rgb(0xDDD4C4).into();
-        theme.colors.secondary_active = rgb(0xD4CABB).into();
-        theme.colors.button_secondary = wash;
-        theme.colors.button_secondary_foreground = ink;
-        theme.colors.button_secondary_hover = rgb(0xDDD4C4).into();
-        theme.colors.button_secondary_active = rgb(0xD4CABB).into();
-        theme.colors.ring = safelight;
-        theme.colors.caret = safelight;
-        theme.colors.selection = safelight.opacity(0.28);
-        theme.colors.input = hairline;
-        theme.colors.popover = cream;
-        theme.colors.popover_foreground = ink;
-        theme.colors.list = paper;
-        theme.colors.list_hover = wash;
-        theme.colors.list_active = rgb(0xE4D5BE).into();
-        theme.colors.list_active_border = safelight;
-        theme.colors.danger = danger;
-        theme.colors.danger_foreground = cream;
-        theme.colors.danger_hover = rgb(0xC45C3E).into();
-        theme.colors.success = moss;
-        theme.colors.success_foreground = cream;
-        theme.colors.sidebar = sheet;
-        theme.colors.sidebar_foreground = ink;
-        theme.colors.sidebar_border = hairline;
-        theme.colors.sidebar_accent = wash;
-        theme.colors.sidebar_accent_foreground = ink;
-        theme.colors.sidebar_primary = safelight;
-        theme.colors.sidebar_primary_foreground = cream;
-        theme.colors.group_box = cream;
-        theme.colors.group_box_foreground = ink;
-        theme.colors.progress_bar = safelight;
-        theme.colors.scrollbar = paper;
-        theme.colors.scrollbar_thumb = rgb(0xB7AFA2).into();
-        theme.colors.scrollbar_thumb_hover = rgb(0xA3988A).into();
-        theme.colors.link = safelight_deep;
-        theme.colors.link_hover = safelight;
-        theme.colors.tab = sheet;
-        theme.colors.tab_active = paper;
-        theme.colors.tab_active_foreground = ink;
-        theme.colors.tab_foreground = mute;
-        theme.colors.tab_bar = sheet;
-        theme.radius = px(4.);
-        theme.radius_lg = px(8.);
-        theme.shadow = false;
-    });
+    let is_dark = name != THEME_PAPER && name != THEME_LIGHT;
+    apply_apple_theme(is_dark, MacAccentColor::Blue, cx);
 }
 
 fn bind_keys(cx: &mut App) {
@@ -1470,10 +1296,10 @@ impl PhotoApp {
     }
 
     fn set_theme(&mut self, name: &str, cx: &mut Context<Self>) {
-        let name = if name == THEME_PAPER {
-            THEME_PAPER
+        let name = if name == THEME_PAPER || name == THEME_LIGHT {
+            THEME_LIGHT
         } else {
-            THEME_DARKROOM
+            THEME_DARK
         };
         if self.settings.theme == name {
             return;
@@ -1639,8 +1465,6 @@ impl PhotoApp {
     }
 
     fn render_top_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mute = cx.theme().muted_foreground;
-        let paper = cx.theme().foreground;
         let is_search = matches!(self.screen, Screen::Search);
         let ready_count: i64 = self
             .rows
@@ -1651,90 +1475,64 @@ impl PhotoApp {
             })
             .sum();
         let count_label = if !self.hits.is_empty() {
-            format!("{}", self.hits.len())
+            format!("{} results", self.hits.len())
         } else if ready_count > 0 {
-            format!("{ready_count}")
+            format!("{ready_count} photos")
         } else {
             String::new()
         };
 
-        TitleBar::new().child(
-            h_flex()
-                .w_full()
-                .h_full()
-                .items_center()
-                .pr(px(PAGE_INSET))
-                .gap_4()
-                .child(
-                    div()
-                        .id("wordmark")
-                        .font_family(WORDMARK_FONT)
-                        .italic()
-                        .text_lg()
-                        .text_color(paper)
-                        .cursor_pointer()
-                        .child(PRODUCT)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.present(window, cx);
-                        })),
-                )
-                .child(div().flex_1())
-                .child(
-                    h_flex()
-                        .h_full()
-                        .items_center()
-                        .gap_3()
-                        .flex_shrink_0()
-                        .children(is_search.then(|| {
-                            ToggleGroup::new("view-mode")
-                                .segmented()
-                                .outline()
-                                .xsmall()
-                                .child(
-                                    Toggle::new(0)
-                                        .icon(IconName::LayoutGrid)
-                                        .tooltip("Contact sheet (⌘O)")
-                                        .checked(self.grid),
-                                )
-                                .child(
-                                    Toggle::new(1)
-                                        .icon(IconName::LayoutList)
-                                        .tooltip("List (⌘O)")
-                                        .checked(!self.grid),
-                                )
-                                .on_click(cx.listener(|this, states: &Vec<bool>, window, cx| {
-                                    let want_grid =
-                                        states.first().copied().unwrap_or(this.grid);
-                                    let want_list =
-                                        states.get(1).copied().unwrap_or(!this.grid);
-                                    if (want_grid && !this.grid) || (want_list && this.grid)
-                                    {
-                                        this.on_grid(&ToggleGrid, window, cx);
-                                    }
-                                }))
-                        }))
-                        .children(is_search.then(|| {
-                            div()
-                                .text_xs()
-                                .text_color(mute)
-                                .child(count_label)
-                        }))
-                        .child(
-                            Button::new("settings-btn")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::Settings)
-                                .tooltip("Settings (⌘,)")
-                                .selected(!is_search)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if matches!(this.screen, Screen::Settings) {
-                                        this.present(window, cx);
-                                    } else {
-                                        this.on_open_settings(&OpenSettings, window, cx);
-                                    }
-                                })),
-                        ),
-                ),
+        let mut toolbar = MacToolbar::new("loupe-toolbar").leading(
+            div()
+                .id("wordmark")
+                .mac_headline()
+                .cursor_pointer()
+                .child(PRODUCT)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.present(window, cx);
+                })),
+        );
+
+        if is_search {
+            toolbar = toolbar.center(
+                MacSegmentedControl::new("view-mode")
+                    .segment(
+                        MacSegment::new("grid")
+                            .icon(IconName::LayoutGrid)
+                            .tooltip("Contact sheet (⌘O)"),
+                    )
+                    .segment(
+                        MacSegment::new("list")
+                            .icon(IconName::LayoutList)
+                            .tooltip("List (⌘O)"),
+                    )
+                    .selected_index(if self.grid { 0 } else { 1 })
+                    .on_change(cx.listener(|this, idx: &usize, window, cx| {
+                        let want_grid = *idx == 0;
+                        if want_grid != this.grid {
+                            this.on_grid(&ToggleGrid, window, cx);
+                        }
+                    })),
+            );
+        }
+
+        if !count_label.is_empty() {
+            toolbar = toolbar.trailing(MacBadge::new("count-badge", count_label));
+        }
+
+        toolbar.trailing(
+            MacButton::new("settings-btn")
+                .borderless()
+                .icon(IconName::Settings)
+                .tooltip("Settings (⌘,)")
+                .selected(!is_search)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    if matches!(this.screen, Screen::Settings) {
+                        this.present(window, cx);
+                    } else {
+                        this.on_open_settings(&OpenSettings, window, cx);
+                    }
+                })),
         )
     }
 
@@ -1809,8 +1607,6 @@ impl PhotoApp {
                             )
                             .title(
                                 EmptyTitle::new()
-                                    .font_family(WORDMARK_FONT)
-                                    .italic()
                                     .text_lg()
                                     .child("Downloading the on-device model"),
                             )
@@ -1841,10 +1637,10 @@ impl PhotoApp {
                                             .child(self.fetch_note.clone()),
                                     )
                                     .child(
-                                        Button::new("first-hide")
+                                        MacButton::new("first-hide")
                                             .small()
-                                            .ghost()
-                                            .label("Hide to menu bar")
+                                            .borderless()
+                                            .label("Hide to Menu Bar")
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.hide_to_tray(cx);
                                             })),
@@ -1877,8 +1673,8 @@ impl PhotoApp {
                 .items_center()
                 .justify_center()
                 .child(
-                    Button::new(SharedString::from(format!("welcome-{suggestion}")))
-                        .ghost()
+                    MacButton::new(SharedString::from(format!("welcome-{suggestion}")))
+                        .borderless()
                         .label(suggestion)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.apply_query(suggestion, window, cx);
@@ -1902,8 +1698,6 @@ impl PhotoApp {
                         EmptyHeader::new()
                             .title(
                                 EmptyTitle::new()
-                                    .font_family(WORDMARK_FONT)
-                                    .italic()
                                     .text_xl()
                                     .child("Find a photograph"),
                             )
@@ -2054,8 +1848,6 @@ impl PhotoApp {
                             )
                             .title(
                                 EmptyTitle::new()
-                                    .font_family(WORDMARK_FONT)
-                                    .italic()
                                     .text_lg()
                                     .child("Nothing matched that."),
                             )
@@ -2065,9 +1857,9 @@ impl PhotoApp {
                     )
                     .content(
                         EmptyContent::new().child(
-                            Button::new("clear-query-btn")
+                            MacButton::new("clear-query-btn")
                                 .small()
-                                .ghost()
+                                .borderless()
                                 .label("Clear")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.clear_query(window, cx);
@@ -2104,8 +1896,7 @@ impl PhotoApp {
             .w_full()
             .h(px(SEARCH_BAR_HEIGHT))
             .flex_shrink_0()
-            .pl(px(TRAFFIC_LIGHT_CLEARANCE))
-            .pr(px(PAGE_INSET))
+            .px(px(PAGE_INSET))
             .border_b_1()
             .border_color(border)
             .bg(cx.theme().background)
@@ -2113,7 +1904,10 @@ impl PhotoApp {
             .child(
                 div()
                     .flex_1()
-                    .child(Input::new(&self.query_input).cleanable(true)),
+                    .child(
+                        MacSearchField::new("main-search", self.query_input.clone())
+                            .shortcut_hint("⌘F"),
+                    ),
             );
 
         let list_content: AnyElement = if is_empty_query && !has_hits {
@@ -2339,12 +2133,11 @@ impl PhotoApp {
                     .gap_2()
                     .w_full()
                     .child(
-                        Button::new("side-open")
+                        MacButton::new("side-open")
                             .small()
-                            .primary()
+                            .prominent()
                             .icon(IconName::ExternalLink)
                             .label("Open")
-                            .flex_1()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.status = match open_path(&hit_path) {
                                     Ok(()) => format!("Opened {}", hit_path.display()).into(),
@@ -2354,12 +2147,10 @@ impl PhotoApp {
                             })),
                     )
                     .child(
-                        Button::new("side-reveal")
+                        MacButton::new("side-reveal")
                             .small()
-                            .secondary()
                             .icon(IconName::Folder)
                             .label("Finder")
-                            .flex_1()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.status = match reveal_path(&hit_reveal) {
                                     Ok(()) => "Showing it in Finder.".into(),
@@ -2369,13 +2160,11 @@ impl PhotoApp {
                             })),
                     )
                     .child(
-                        Button::new("side-copy")
+                        MacButton::new("side-copy")
                             .small()
-                            .secondary()
                             .icon(IconName::Copy)
                             .label("Copy")
                             .tooltip("Copy photo to clipboard (⌘C)")
-                            .flex_1()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.copy_selected(cx);
                             })),
@@ -2426,10 +2215,11 @@ impl PhotoApp {
                         .justify_between()
                         .child(div().text_xs().text_color(muted_fg).child("Path"))
                         .child(
-                            Button::new("copy-path-btn")
-                                .xsmall()
-                                .ghost()
+                            MacButton::new("copy-path-btn")
+                                .small()
+                                .borderless()
                                 .icon(IconName::Copy)
+                                .tooltip("Copy path")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let path_str = hit_copy_path.display().to_string();
                                     cx.write_to_clipboard(ClipboardItem::new_string(path_str));
@@ -2533,9 +2323,9 @@ impl PhotoApp {
                     .items_center()
                     .gap_1_5()
                     .child(
-                        Button::new(SharedString::from(format!("open-row-{index}")))
+                        MacButton::new(SharedString::from(format!("open-row-{index}")))
                             .small()
-                            .ghost()
+                            .borderless()
                             .icon(IconName::ExternalLink)
                             .tooltip("Open photo (↵)")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -2545,9 +2335,9 @@ impl PhotoApp {
                             })),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("reveal-row-{index}")))
+                        MacButton::new(SharedString::from(format!("reveal-row-{index}")))
                             .small()
-                            .ghost()
+                            .borderless()
                             .icon(IconName::Folder)
                             .tooltip("Reveal in Finder")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -2716,8 +2506,6 @@ impl PhotoApp {
         let muted = cx.theme().muted_foreground;
 
         let work_h = self.work_height(window);
-        let pref_gap = 16.;
-        let col_w = ((inner_w - pref_gap) / 2.).max(240.);
         v_flex()
             .id("settings-page")
             .w(px(f32::from(window.viewport_size().width)))
@@ -2741,14 +2529,13 @@ impl PhotoApp {
                             .gap_1()
                             .child(
                                 div()
-                                    .font_family(WORDMARK_FONT)
-                                    .italic()
-                                    .text_lg()
+                                    .mac_large_title()
+                                    .text_color(cx.theme().foreground)
                                     .child("Settings"),
                             )
                             .child(
                                 div()
-                                    .text_sm()
+                                    .mac_subheadline()
                                     .text_color(muted)
                                     .child(summary),
                             ),
@@ -2775,11 +2562,11 @@ impl PhotoApp {
                                     )
                                     .child(div().flex_1())
                                     .child(
-                                        Button::new("settings-add-folder")
+                                        MacButton::new("settings-add-folder")
                                             .small()
-                                            .primary()
+                                            .prominent()
                                             .icon(IconName::FolderPlus)
-                                            .label("Add folder")
+                                            .label("Add Folder")
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.add_folder(cx);
                                             })),
@@ -2807,11 +2594,11 @@ impl PhotoApp {
                                     .child(div().flex_1())
                                     .children((!no_disks).then(|| {
                                         let start = disk_pick_root.clone();
-                                        Button::new("settings-disk-folder")
+                                        MacButton::new("settings-disk-folder")
                                             .small()
-                                            .primary()
+                                            .prominent()
                                             .icon(IconName::FolderPlus)
-                                            .label("Choose folder")
+                                            .label("Choose Folder")
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 match start.clone() {
                                                     Some(path) => this.pick_folder_on_disk(path, cx),
@@ -2844,250 +2631,213 @@ impl PhotoApp {
                                     .child(IconName::SlidersHorizontal)
                                     .child("Preferences"),
                             )
-                            .child(
-                                GroupBox::new()
-                                    .id("engine-box")
-                                    .outline()
-                                    .w(px(inner_w))
+                            .child({
+                                let (model_status_text, model_badge) = if self.fetching {
+                                    (self.fetch_note.to_string(), MacBadge::new("download-badge", "Downloading").accent())
+                                } else if gemma::weights_on_disk().is_some() {
+                                    ("EmbeddingGemma 2 is ready on this Mac.".to_string(), MacBadge::new("installed-badge", "Installed").success())
+                                } else {
+                                    ("Model (~530 MB) downloads on first launch.".to_string(), MacBadge::new("not-installed-badge", "Available").neutral())
+                                };
+
+                                let mut model_group = MacSettingsGroup::new("engine-group")
                                     .title("Model")
-                                    .child(
-                                        div().w_full().child(if self.fetching {
-                                            self.fetch_note.to_string()
-                                        } else if gemma::weights_on_disk().is_some() {
-                                            "EmbeddingGemma 2 is on this Mac. It starts on the first search or index.".to_string()
-                                        } else {
-                                            "The model downloads on first launch (~530 MB). You can hide the window; Loupe stays in the menu bar.".to_string()
-                                        }),
-                                    )
-                                    .children(self.fetching.then(|| {
-                                        Progress::new("settings-fetch")
-                                            .loading(self.fetch_frac <= 1.)
-                                            .value(self.fetch_frac)
+                                    .footer("EmbeddingGemma 2 runs locally and privately on your Mac via Metal.")
+                                    .row(
+                                        MacSettingsRow::new("engine-row", "EmbeddingGemma 2")
+                                            .subtitle(model_status_text)
+                                            .icon(IconName::Cpu)
+                                            .icon_color(cx.theme().primary)
+                                            .control(model_badge),
+                                    );
+
+                                if self.fetching {
+                                    model_group = model_group.child(
+                                        v_flex()
                                             .w_full()
-                                            .color(cx.theme().primary)
-                                    })),
-                            )
+                                            .px(px(16.0))
+                                            .pb(px(12.0))
+                                            .gap_2()
+                                            .child(
+                                                Progress::new("settings-fetch")
+                                                    .loading(self.fetch_frac <= 1.)
+                                                    .value(self.fetch_frac)
+                                                    .w_full()
+                                                    .color(cx.theme().primary),
+                                            ),
+                                    );
+                                }
+                                model_group
+                            })
                             .child(
-                                GroupBox::new()
-                                    .id("theme-box")
-                                    .outline()
-                                    .w(px(inner_w))
+                                MacSettingsGroup::new("theme-group")
                                     .title("Appearance")
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .child("Darkroom is the default. Paper is a light table."),
-                                    )
-                                    .child(
-                                        ToggleGroup::new("theme-mode")
-                                            .segmented()
-                                            .outline()
-                                            .child(
-                                                Toggle::new(0)
-                                                    .label("Darkroom")
-                                                    .checked(self.settings.theme != THEME_PAPER),
-                                            )
-                                            .child(
-                                                Toggle::new(1)
-                                                    .label("Paper")
-                                                    .checked(self.settings.theme == THEME_PAPER),
-                                            )
-                                            .on_click(cx.listener(|this, states: &Vec<bool>, _, cx| {
-                                                // ToggleGroup flips only the clicked item; the other stays.
-                                                let want_paper =
-                                                    states.get(1).copied().unwrap_or(false);
-                                                let want_darkroom =
-                                                    states.first().copied().unwrap_or(false);
-                                                let paper_now =
-                                                    this.settings.theme == THEME_PAPER;
-                                                if want_paper && !paper_now {
-                                                    this.set_theme(THEME_PAPER, cx);
-                                                } else if want_darkroom && paper_now {
-                                                    this.set_theme(THEME_DARKROOM, cx);
-                                                }
-                                            })),
+                                    .footer("Loupe adapts to macOS Light and Dark appearance.")
+                                    .row(
+                                        MacSettingsRow::new("appearance-row", "Color Theme")
+                                            .subtitle("Darkroom dark mode or Paper light table")
+                                            .icon(IconName::Sun)
+                                            .icon_color(cx.theme().primary)
+                                            .control(
+                                                MacSegmentedControl::new("theme-mode")
+                                                    .segment(MacSegment::new("darkroom").label("Darkroom"))
+                                                    .segment(MacSegment::new("paper").label("Paper"))
+                                                    .selected_index(if self.settings.theme == THEME_PAPER { 1 } else { 0 })
+                                                    .on_change(cx.listener(|this, idx: &usize, _, cx| {
+                                                        if *idx == 1 {
+                                                            this.set_theme(THEME_PAPER, cx);
+                                                        } else {
+                                                            this.set_theme(THEME_DARKROOM, cx);
+                                                        }
+                                                    })),
+                                            ),
                                     ),
                             )
                             .child(
-                                GroupBox::new()
-                                    .id("menu-bar-box")
-                                    .outline()
-                                    .w(px(inner_w))
-                                    .title("Menu Bar")
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .child("Loupe lives as an icon in the menu bar. Closing the window, Escape, or Command-Q parks it. Quit from the menu-bar icon."),
-                                    )
-                                    .child(
-                                        Checkbox::new("open-at-login")
-                                            .label("Open at login")
-                                            .checked(self.settings.open_at_login)
-                                            .on_change(cx.listener(|this, checked, _, cx| {
-                                                this.set_open_at_login(*checked, cx);
-                                            })),
+                                MacSettingsGroup::new("menu-bar-group")
+                                    .title("Menu Bar & Startup")
+                                    .footer("Loupe lives in the macOS menu bar. Closing the window, Escape, or ⌘Q parks it.")
+                                    .row(
+                                        MacSettingsRow::new("open-at-login-row", "Open at Login")
+                                            .subtitle("Start Loupe automatically when you log into your Mac")
+                                            .icon(IconName::Power)
+                                            .icon_color(cx.theme().primary)
+                                            .control(
+                                                MacSwitch::new("open-at-login")
+                                                    .mini()
+                                                    .checked(self.settings.open_at_login)
+                                                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                                                        this.set_open_at_login(*checked, cx);
+                                                    })),
+                                            ),
                                     ),
                             )
                             .child(
-                                GroupBox::new()
-                                    .id("index-keep-up-box")
-                                    .outline()
-                                    .w(px(inner_w))
-                                    .title("Keeping up to date")
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .child("New photos are indexed while Loupe sits in the menu bar. Unplugged disks wait until they return."),
-                                    )
-                                    .child(
-                                        Checkbox::new("watch-folders")
-                                            .label("Watch folders")
-                                            .checked(self.settings.watch_folders)
-                                            .on_change(cx.listener(|this, checked, _, cx| {
-                                                this.set_watch_folders(*checked, cx);
-                                            })),
-                                    )
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .text_sm()
-                                            .text_color(muted)
-                                            .child("Sweep catches copies the watcher missed."),
-                                    )
-                                    .child(
-                                        ToggleGroup::new("index-sweep")
-                                            .segmented()
-                                            .outline()
-                                            .child(
-                                                Toggle::new(0)
-                                                    .label("Off")
-                                                    .checked(self.settings.index_sweep_hours == 0),
-                                            )
-                                            .child(
-                                                Toggle::new(1)
-                                                    .label("1 hour")
-                                                    .checked(self.settings.index_sweep_hours == 1),
-                                            )
-                                            .child(
-                                                Toggle::new(2)
-                                                    .label("6 hours")
-                                                    .checked(self.settings.index_sweep_hours == 6),
-                                            )
-                                            .child(
-                                                Toggle::new(3)
-                                                    .label("Daily")
-                                                    .checked(self.settings.index_sweep_hours == 24),
-                                            )
-                                            .on_click(cx.listener(|this, states: &Vec<bool>, _, cx| {
-                                                let hours = if states.get(3).copied().unwrap_or(false)
-                                                    && this.settings.index_sweep_hours != 24
-                                                {
-                                                    24
-                                                } else if states.get(2).copied().unwrap_or(false)
-                                                    && this.settings.index_sweep_hours != 6
-                                                {
-                                                    6
-                                                } else if states.get(1).copied().unwrap_or(false)
-                                                    && this.settings.index_sweep_hours != 1
-                                                {
-                                                    1
-                                                } else if states.first().copied().unwrap_or(false)
-                                                    && this.settings.index_sweep_hours != 0
-                                                {
-                                                    0
-                                                } else {
-                                                    return;
-                                                };
-                                                this.set_sweep_hours(hours, cx);
-                                            })),
-                                    ),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_start()
-                                    .w(px(inner_w))
-                                    .gap(px(pref_gap))
-                                    .child(
-                                        GroupBox::new()
-                                            .id("shortcut-box")
-                                            .outline()
-                                            .w(px(col_w))
-                                            .title("Global Shortcut")
-                                            .child(
-                                                div()
-                                                    .w_full()
-                                                    .child(format!("{shortcut} opens search from any app.")),
-                                            )
-                                            .child(
-                                                div()
-                                                    .w_full()
-                                                    .child("Use shift, ctrl, alt, and super, then any key. Letters, digits, function keys, arrows, and punctuation all work."),
-                                            )
-                                            .child(Input::new(&self.shortcut_input))
-                                            .child(div().text_xs().text_color(cx.theme().danger).child(self.shortcut_error.clone()))
-                                            .child(
-                                                Button::new("apply-shortcut")
-                                                    .small()
-                                                    .outline()
-                                                    .label("Apply Shortcut")
-                                                    .on_click(cx.listener(|this, _, _, cx| this.apply_shortcut(cx))),
+                                MacSettingsGroup::new("index-group")
+                                    .title("Background Indexing")
+                                    .footer("Sweep catches new copies and file changes that the watcher missed.")
+                                    .row(
+                                        MacSettingsRow::new("watch-folders-row", "Watch Folders")
+                                            .subtitle("Index newly added photos while Loupe is in the background")
+                                            .icon(IconName::Folder)
+                                            .icon_color(cx.theme().primary)
+                                            .control(
+                                                MacSwitch::new("watch-folders")
+                                                    .mini()
+                                                    .checked(self.settings.watch_folders)
+                                                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                                                        this.set_watch_folders(*checked, cx);
+                                                    })),
                                             ),
                                     )
-                                    .child(
-                                        GroupBox::new()
-                                            .id("update-box")
-                                            .outline()
-                                            .w(px(col_w))
-                                            .title("Software Updates")
-                                            .child(
-                                                div()
-                                                    .w_full()
-                                                    .child(format!("This copy is {APP_VERSION}. Once a day it checks GitHub for a newer disk image.")),
-                                            )
-                                            .child(div().w_full().text_xs().text_color(muted).child(self.update_line.clone()))
-                                            .child(Input::new(&self.feed_input))
-                                            .child(
-                                                Checkbox::new("daily-update")
-                                                    .label("Check once a day")
+                                    .row(
+                                        MacSettingsRow::new("index-sweep-row", "Index Sweep Interval")
+                                            .subtitle("Periodic background scan for disks and changed files")
+                                            .icon(IconName::Clock)
+                                            .icon_color(cx.theme().primary)
+                                            .control(
+                                                MacSegmentedControl::new("index-sweep")
+                                                    .segment(MacSegment::new("off").label("Off"))
+                                                    .segment(MacSegment::new("1h").label("1 hr"))
+                                                    .segment(MacSegment::new("6h").label("6 hrs"))
+                                                    .segment(MacSegment::new("daily").label("Daily"))
+                                                    .selected_index(match self.settings.index_sweep_hours {
+                                                        1 => 1,
+                                                        6 => 2,
+                                                        24 => 3,
+                                                        _ => 0,
+                                                    })
+                                                    .on_change(cx.listener(|this, idx: &usize, _, cx| {
+                                                        let hours = match *idx {
+                                                            1 => 1,
+                                                            2 => 6,
+                                                            3 => 24,
+                                                            _ => 0,
+                                                        };
+                                                        this.set_sweep_hours(hours, cx);
+                                                    })),
+                                            ),
+                                    ),
+                            )
+                            .child({
+                                let mut shortcut_group = MacSettingsGroup::new("shortcut-group")
+                                    .title("Global Shortcut")
+                                    .footer("Press modifier keys (Shift, Ctrl, Alt, Super) plus any key, then click Apply.")
+                                    .row(
+                                        MacSettingsRow::new("shortcut-row", "Open Search from Any App")
+                                            .subtitle(format!("{shortcut} triggers Loupe from anywhere"))
+                                            .icon(IconName::Keyboard)
+                                            .icon_color(cx.theme().primary)
+                                            .control(
+                                                h_flex()
+                                                    .gap_2()
+                                                    .items_center()
+                                                    .child(div().w(px(140.0)).child(Input::new(&self.shortcut_input)))
+                                                    .child(
+                                                        MacButton::new("apply-shortcut")
+                                                            .small()
+                                                            .label("Apply")
+                                                            .on_click(cx.listener(|this, _, _, cx| this.apply_shortcut(cx))),
+                                                    ),
+                                            ),
+                                    );
+                                if !self.shortcut_error.is_empty() {
+                                    shortcut_group = shortcut_group.child(
+                                        div()
+                                            .px(px(16.0))
+                                            .pb(px(8.0))
+                                            .text_xs()
+                                            .text_color(cx.theme().danger)
+                                            .child(self.shortcut_error.clone()),
+                                    );
+                                }
+                                shortcut_group
+                            })
+                            .child(
+                                MacSettingsGroup::new("update-group")
+                                    .title("Software Updates")
+                                    .footer(format!("Loupe v{APP_VERSION}"))
+                                    .row(
+                                        MacSettingsRow::new("daily-update-row", "Check Once a Day")
+                                            .subtitle("Check GitHub releases daily for newer disk images")
+                                            .icon(IconName::RefreshCw)
+                                            .icon_color(cx.theme().primary)
+                                            .control(
+                                                MacSwitch::new("daily-update")
+                                                    .mini()
                                                     .checked(self.settings.check_updates)
-                                                    .on_change(cx.listener(|this, checked, _, cx| {
+                                                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
                                                         this.settings.check_updates = *checked;
                                                         if let Err(err) = save_settings(&this.settings) {
                                                             this.update_line = err.to_string();
                                                         }
                                                         cx.notify();
                                                     })),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
+                                            ),
+                                    )
+                                    .row(
+                                        MacSettingsRow::new("check-update-actions", "Update Status")
+                                            .subtitle(if self.update_line.is_empty() {
+                                                "Up to date".to_string()
+                                            } else {
+                                                self.update_line.clone()
+                                            })
+                                            .icon(IconName::Download)
+                                            .icon_color(cx.theme().primary)
+                                            .control(
+                                                h_flex()
                                                     .gap_2()
-                                                    .flex_wrap()
+                                                    .items_center()
                                                     .child(
-                                                        Button::new("save-feed")
+                                                        MacButton::new("check-now")
                                                             .small()
-                                                            .outline()
-                                                            .label("Save feed")
-                                                            .on_click(cx.listener(|this, _, _, cx| this.save_feed(cx))),
-                                                    )
-                                                    .child(
-                                                        Button::new("clear-feed")
-                                                            .small()
-                                                            .ghost()
-                                                            .label("Clear feed")
-                                                            .on_click(cx.listener(|this, _, _, cx| this.clear_feed(cx))),
-                                                    )
-                                                    .child(
-                                                        Button::new("check-now")
-                                                            .small()
-                                                            .secondary()
-                                                            .label("Check now")
+                                                            .label("Check Now")
                                                             .on_click(cx.listener(|this, _, _, cx| this.spawn_update(cx))),
                                                     )
                                                     .children(self.release_url.clone().map(|url| {
-                                                        Button::new("open-release")
+                                                        MacButton::new("open-release")
                                                             .small()
-                                                            .primary()
+                                                            .prominent()
                                                             .label("Open Release Page")
                                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                                 this.status = match open_url(&url) {
@@ -3097,6 +2847,31 @@ impl PhotoApp {
                                                                 cx.notify();
                                                             }))
                                                     })),
+                                            ),
+                                    )
+                                    .row(
+                                        MacSettingsRow::new("feed-url-row", "Custom Feed URL")
+                                            .subtitle("Optional custom release feed URL")
+                                            .icon(IconName::Rss)
+                                            .icon_color(cx.theme().primary)
+                                            .control(
+                                                h_flex()
+                                                    .gap_2()
+                                                    .items_center()
+                                                    .child(div().w(px(200.0)).child(Input::new(&self.feed_input)))
+                                                    .child(
+                                                        MacButton::new("save-feed")
+                                                            .small()
+                                                            .label("Save")
+                                                            .on_click(cx.listener(|this, _, _, cx| this.save_feed(cx))),
+                                                    )
+                                                    .child(
+                                                        MacButton::new("clear-feed")
+                                                            .small()
+                                                            .borderless()
+                                                            .label("Clear")
+                                                            .on_click(cx.listener(|this, _, _, cx| this.clear_feed(cx))),
+                                                    ),
                                             ),
                                     ),
                             ),
@@ -3144,15 +2919,15 @@ impl PhotoApp {
         };
 
         let status_tag = if underway {
-            Tag::warning().child("indexing")
+            MacBadge::new(SharedString::from(format!("tag-{index}")), "indexing").warning()
         } else {
             match &row.index {
                 IndexState::Ready { photos, .. } => {
-                    Tag::secondary().child(format!("{photos} photos"))
+                    MacBadge::new(SharedString::from(format!("tag-{index}")), format!("{photos} photos")).neutral()
                 }
-                IndexState::NoIndex => Tag::secondary().child("no index"),
-                IndexState::NotConnected => Tag::secondary().child("unplugged"),
-                IndexState::Unreadable(_) => Tag::danger().child("unreadable"),
+                IndexState::NoIndex => MacBadge::new(SharedString::from(format!("tag-{index}")), "no index").neutral(),
+                IndexState::NotConnected => MacBadge::new(SharedString::from(format!("tag-{index}")), "unplugged").neutral(),
+                IndexState::Unreadable(_) => MacBadge::new(SharedString::from(format!("tag-{index}")), "unreadable").danger(),
             }
         };
         let live_line = underway.then(|| index_sentence(&title, &self.index_live));
@@ -3202,7 +2977,7 @@ impl PhotoApp {
                                             DiskMedium::Hdd => "HDD",
                                             DiskMedium::Unknown => "DISK",
                                         };
-                                        Tag::secondary().child(medium_label)
+                                        MacBadge::new(SharedString::from(format!("med-{index}")), medium_label).neutral()
                                     })),
                             )
                             .child(
@@ -3246,14 +3021,12 @@ impl PhotoApp {
                     .gap_2()
                     .flex_shrink_0()
                     .children(connected.then(|| {
-                        Button::new(SharedString::from(format!("index-{index}")))
+                        MacButton::new(SharedString::from(format!("index-{index}")))
                             .small()
-                            .with_variant(if underway {
-                                ButtonVariant::Secondary
-                            } else if indexed {
-                                ButtonVariant::Secondary
+                            .variant(if underway || indexed {
+                                MacButtonVariant::Push
                             } else {
-                                ButtonVariant::Primary
+                                MacButtonVariant::Prominent
                             })
                             .icon(IconName::RefreshCw)
                             .label(action)
@@ -3263,9 +3036,9 @@ impl PhotoApp {
                             }))
                     }))
                     .children((is_external && connected && !remembered).then(|| {
-                        Button::new(SharedString::from(format!("disk-folder-{index}")))
+                        MacButton::new(SharedString::from(format!("disk-folder-{index}")))
                             .small()
-                            .ghost()
+                            .borderless()
                             .icon(IconName::FolderPlus)
                             .tooltip("Choose a folder on this disk")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -3273,9 +3046,9 @@ impl PhotoApp {
                             }))
                     }))
                     .children((!is_external && connected).then(|| {
-                        Button::new(SharedString::from(format!("reveal-f-{index}")))
+                        MacButton::new(SharedString::from(format!("reveal-f-{index}")))
                             .small()
-                            .ghost()
+                            .borderless()
                             .icon(IconName::Folder)
                             .tooltip("Reveal in Finder")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -3285,9 +3058,10 @@ impl PhotoApp {
                             }))
                     }))
                     .children(remembered.then(|| {
-                        Button::new(SharedString::from(format!("forget-{index}")))
+                        MacButton::new(SharedString::from(format!("forget-{index}")))
                             .small()
-                            .ghost()
+                            .borderless()
+                            .destructive()
                             .icon(IconName::Trash)
                             .tooltip("Remove from search list")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -3501,15 +3275,17 @@ fn search_hint(
     window: &Window,
     _cx: &App,
 ) -> impl IntoElement {
-    StatusBar::new()
-        .h(px(STATUS_BAR_HEIGHT))
-        .pl(px(TRAFFIC_LIGHT_CLEARANCE))
-        .pr(px(PAGE_INSET))
-        .left(status_text)
-        .right(
+    MacStatusBar::new("bottom-status-bar")
+        .leading(
+            div()
+                .pl(px(TRAFFIC_LIGHT_CLEARANCE))
+                .child(status_text),
+        )
+        .trailing(
             h_flex()
                 .items_center()
                 .gap_3()
+                .pr(px(PAGE_INSET))
                 .child(
                     div()
                         .flex()
@@ -3602,7 +3378,7 @@ fn key_chip(action: &dyn Action, context: &str, fallback: &str, window: &Window)
     }
     match Keystroke::parse(fallback) {
         Ok(stroke) => Kbd::new(stroke).outline().into_any_element(),
-        Err(_) => div().child(fallback.to_string()).into_any_element(),
+        Err(_) => MacKbd::new(SharedString::from(format!("kchip-{fallback}")), fallback).into_any_element(),
     }
 }
 

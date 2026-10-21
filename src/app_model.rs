@@ -87,6 +87,8 @@ pub struct GuiSettings {
 
 pub const THEME_DARKROOM: &str = "darkroom";
 pub const THEME_PAPER: &str = "paper";
+pub const THEME_LIGHT: &str = "light";
+pub const THEME_DARK: &str = "dark";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateReport {
@@ -143,7 +145,7 @@ pub fn load_settings() -> GuiSettings {
             }
             "theme" => {
                 let value = value.trim();
-                if value == THEME_PAPER || value == THEME_DARKROOM {
+                if value == THEME_PAPER || value == THEME_DARKROOM || value == THEME_LIGHT || value == THEME_DARK {
                     settings.theme = value.to_string();
                 }
             }
