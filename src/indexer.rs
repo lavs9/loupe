@@ -170,6 +170,7 @@ pub fn run_incremental_index(
                 Ok(Some(embedding)) => embedding,
                 Ok(None) => {
                     warn!("skip {rel_path}: no decodable image");
+                    report.skipped += 1;
                     emit(tick, &report, &rel_path);
                     continue;
                 }
@@ -179,7 +180,12 @@ pub fn run_incremental_index(
                     emit(tick, &report, &rel_path);
                     continue;
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    warn!("skip {rel_path}: {err}");
+                    report.skipped += 1;
+                    emit(tick, &report, &rel_path);
+                    continue;
+                }
             };
             (embedding, decoded, String::new(), exif)
         } else {

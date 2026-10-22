@@ -6,7 +6,7 @@ description = "Search photos, clips, and songs on this Mac and on disks you plug
 
 [features]
 # The window pulls in GPUI. The command-line build stays the default.
-gui = ["dep:gpui-kit", "dep:global-hotkey", "dep:rfd", "dep:tray-icon", "dep:notify"]
+gui = ["dep:gpui-apple-hig", "dep:gpui-kit", "dep:global-hotkey", "dep:rfd", "dep:tray-icon", "dep:notify"]
 
 [dependencies]
 anyhow = "1.0"
@@ -32,6 +32,7 @@ ureq = { version = "2.12", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 zerocopy = { version = "0.8", features = ["derive"] }
+gpui-apple-hig = { path = "../gpui-apple-hig", optional = true }
 gpui-kit = { version = "0.7.3", optional = true }
 global-hotkey = { version = "0.8", optional = true }
 rfd = { version = "0.15", optional = true }

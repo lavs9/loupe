@@ -144,12 +144,6 @@ fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
         return Some("image/png");
     }
-    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        return Some("image/gif");
-    }
-    if bytes.len() > 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        return Some("image/webp");
-    }
     None
 }
 
@@ -196,7 +190,7 @@ fn decode_full(path: &Path) -> Option<image::DynamicImage> {
     decode_bytes(&bytes)
 }
 
-fn decode_bytes(bytes: &[u8]) -> Option<image::DynamicImage> {
+pub fn decode_bytes(bytes: &[u8]) -> Option<image::DynamicImage> {
     ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?
@@ -204,7 +198,7 @@ fn decode_bytes(bytes: &[u8]) -> Option<image::DynamicImage> {
         .ok()
 }
 
-fn encode_png(image: &image::DynamicImage) -> Option<Vec<u8>> {
+pub fn encode_png(image: &image::DynamicImage) -> Option<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     image.write_to(&mut cursor, image::ImageFormat::Png).ok()?;
     Some(cursor.into_inner())

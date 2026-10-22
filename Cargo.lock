@@ -2302,6 +2302,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-apple-hig"
+version = "0.1.0"
+dependencies = [
+ "gpui-kit",
+]
+
+[[package]]
 name = "gpui-base"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3860,6 +3867,7 @@ dependencies = [
  "chrono",
  "clap",
  "global-hotkey",
+ "gpui-apple-hig",
  "gpui-kit",
  "id3",
  "image",
