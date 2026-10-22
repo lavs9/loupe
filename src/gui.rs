@@ -27,7 +27,7 @@ use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::{ScrollableElement, Scrollbar};
 use gpui_kit::component::skeleton::Skeleton;
 use gpui_kit::component::{
-    v_virtual_list, ActiveTheme, Sizable, TitleBar, VirtualListScrollHandle,
+    v_virtual_list, ActiveTheme, Sizable, VirtualListScrollHandle,
 };
 use gpui_apple_hig::{
     apply_apple_theme, format_mac_shortcut, MacAccentColor, MacBadge,
@@ -79,7 +79,6 @@ const PRODUCT: &str = "Loupe";
 const SEARCH_LIMIT: usize = 48;
 const WATCH_DEBOUNCE: Duration = Duration::from_secs(2);
 const WATCH_PUMP: Duration = Duration::from_millis(400);
-const TRAFFIC_LIGHT_CLEARANCE: f32 = 80.;
 const PAGE_INSET: f32 = 20.;
 const TILE_GAP: f32 = 12.;
 const SHEET_PAD: f32 = 24.;
@@ -140,10 +139,16 @@ pub fn run() -> Result<()> {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(860.), px(560.))),
-            window_background: WindowBackgroundAppearance::Opaque,
+            window_background: WindowBackgroundAppearance::Blurred,
+            titlebar: Some(TitlebarOptions {
+                title: Some("Loupe".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(point(px(20.0), px(19.0))),
+            }),
+            app_owns_titlebar_drag: false,
             focus: true,
             show: true,
-            ..TitleBar::window_options()
+            ..Default::default()
         };
         match open_window(options, cx, |window, cx| {
             cx.new(|cx| PhotoApp::new(window, cx))
@@ -1564,18 +1569,33 @@ impl PhotoApp {
             String::new()
         };
 
-        let mut toolbar = MacToolbar::new("loupe-toolbar").leading(
-            div()
-                .id("wordmark")
-                .mac_headline()
-                .cursor_pointer()
-                .child(PRODUCT)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.present(window, cx);
-                })),
-        );
+        let mut toolbar = MacToolbar::new("loupe-toolbar");
 
         if is_search {
+            toolbar = toolbar.leading(
+                div()
+                    .id("wordmark")
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .cursor_pointer()
+                    .child(
+                        svg()
+                            .path("icons/search.svg")
+                            .size(px(14.0))
+                            .text_color(cx.theme().primary),
+                    )
+                    .child(
+                        div()
+                            .mac_headline()
+                            .text_color(cx.theme().foreground)
+                            .child(PRODUCT),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.present(window, cx);
+                    })),
+            );
+
             toolbar = toolbar.center(
                 MacSegmentedControl::new("view-mode")
                     .segment(
@@ -1627,26 +1647,47 @@ impl PhotoApp {
                     }));
                 toolbar = toolbar.trailing(action_btn);
             }
-        }
 
-        if !count_label.is_empty() {
-            toolbar = toolbar.trailing(MacBadge::new("count-badge", count_label));
-        }
+            if !count_label.is_empty() {
+                toolbar = toolbar.trailing(MacBadge::new("count-badge", count_label));
+            }
 
-        toolbar.trailing(
-            MacButton::new("settings-btn")
-                .borderless()
-                .icon(IconName::Settings)
-                .tooltip("Settings (⌘,)")
-                .selected(!is_search)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    if matches!(this.screen, Screen::Settings) {
-                        this.present(window, cx);
-                    } else {
+            toolbar.trailing(
+                MacButton::new("settings-btn")
+                    .borderless()
+                    .icon(IconName::Settings)
+                    .tooltip("Settings (⌘,)")
+                    .on_click(cx.listener(|this, _, window, cx| {
                         this.on_open_settings(&OpenSettings, window, cx);
-                    }
-                })),
-        )
+                    })),
+            )
+        } else {
+            toolbar = toolbar.leading(
+                MacButton::new("settings-back-btn")
+                    .borderless()
+                    .icon(IconName::ChevronLeft)
+                    .label("Search")
+                    .tooltip("Back to Photos (Esc)")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.present(window, cx);
+                    })),
+            );
+            toolbar = toolbar.title("Settings");
+
+            if !count_label.is_empty() {
+                toolbar = toolbar.trailing(MacBadge::new("count-badge", count_label));
+            }
+
+            toolbar.trailing(
+                MacButton::new("settings-done-btn")
+                    .prominent()
+                    .label("Done")
+                    .tooltip("Close Settings (Esc)")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.present(window, cx);
+                    })),
+            )
+        }
     }
 
     fn render_index_banner(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -1703,7 +1744,8 @@ impl PhotoApp {
     }
 
     fn settings_inner_width(window: &Window) -> f32 {
-        (f32::from(window.viewport_size().width) - TRAFFIC_LIGHT_CLEARANCE - PAGE_INSET).max(360.)
+        let vp_w = f32::from(window.viewport_size().width);
+        760.0f32.min(vp_w - 64.0).max(360.0)
     }
 
     fn first_launch_view(&self, work_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2918,16 +2960,17 @@ impl PhotoApp {
             .child(
                 div()
                     .id("settings-scroll")
-                    .w(px(f32::from(window.viewport_size().width)))
+                    .w_full()
                     .h(px(work_h))
                     .overflow_y_scrollbar()
+                    .flex()
+                    .justify_center()
                     .child(
-                v_flex()
-                    .id("settings-body")
-                    .w(px(inner_w))
-                    .ml(px(TRAFFIC_LIGHT_CLEARANCE))
-                    .gap_6()
-                    .py_6()
+                        v_flex()
+                            .id("settings-body")
+                            .w(px(inner_w))
+                            .gap_6()
+                            .py_6()
                     .child(
                         v_flex()
                             .gap_1()
@@ -3546,7 +3589,11 @@ impl Render for PhotoApp {
             .on_action(cx.listener(Self::on_open_settings))
             .w(viewport.width)
             .h(viewport.height)
-            .bg(cx.theme().background)
+            .bg(if cx.theme().mode.is_dark() {
+                rgba(0x1E1E1EEB)
+            } else {
+                rgba(0xF6F6F6EB)
+            })
             .text_color(cx.theme().foreground)
             .child(top_bar)
             .child(body)
@@ -3724,7 +3771,7 @@ fn search_hint(
     MacStatusBar::new("bottom-status-bar")
         .leading(
             div()
-                .pl(px(TRAFFIC_LIGHT_CLEARANCE))
+                .pl(px(PAGE_INSET))
                 .child(status_text),
         )
         .trailing(
