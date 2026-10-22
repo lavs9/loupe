@@ -2258,7 +2258,7 @@ impl PhotoApp {
                     .flex_1()
                     .min_h(px(360.))
                     .overflow_hidden()
-                    .bg(if cx.theme().mode.is_dark() { rgb(0x0E0C0A) } else { rgb(0xF2F2F7) })
+                    .bg(if cx.theme().mode.is_dark() { rgb(0x202023) } else { rgb(0xF2F2F7) })
                     .flex()
                     .items_center()
                     .justify_center()
@@ -2703,7 +2703,7 @@ impl PhotoApp {
             .rounded(px(6.0))
             .overflow_hidden()
             .relative()
-            .bg(rgb(0x0E0C0A))
+            .bg(if is_dark { rgb(0x202023) } else { rgb(0xEAEAEF) })
             .child(
                 if let Some(p) = thumb.as_deref().filter(|p| p.is_file()) {
                     photo_image(p, ("tile-img", index), ObjectFit::Cover)
@@ -2721,7 +2721,7 @@ impl PhotoApp {
                 .px(px(6.0))
                 .py(px(2.0))
                 .rounded_full()
-                .bg(rgba(0x000000B3))
+                .bg(rgba(0x1C1C1ECC))
                 .border_1()
                 .border_color(rgba(0xFFFFFF33))
                 .shadow_sm()
@@ -2754,7 +2754,7 @@ impl PhotoApp {
                     .px(px(5.0))
                     .py(px(1.5))
                     .rounded(px(4.0))
-                    .bg(rgba(0x00000099))
+                    .bg(rgba(0x1C1C1ECC))
                     .border_1()
                     .border_color(rgba(0xFFFFFF22))
                     .mac_caption2()
@@ -2774,7 +2774,7 @@ impl PhotoApp {
                     .px(px(5.0))
                     .py(px(1.5))
                     .rounded(px(4.0))
-                    .bg(rgba(0x00000099))
+                    .bg(rgba(0x1C1C1ECC))
                     .border_1()
                     .border_color(rgba(0xFFFFFF22))
                     .flex()
@@ -3590,7 +3590,7 @@ impl Render for PhotoApp {
             .w(viewport.width)
             .h(viewport.height)
             .bg(if cx.theme().mode.is_dark() {
-                rgba(0x1E1E1EEB)
+                rgba(0x28282AEB)
             } else {
                 rgba(0xF6F6F6EB)
             })
@@ -3726,16 +3726,17 @@ fn thumb_box(
     width: f32,
     height: f32,
     id: impl Into<ElementId>,
-    _cx: &App,
+    cx: &App,
 ) -> AnyElement {
+    let is_dark = cx.theme().mode.is_dark();
     let frame = div()
         .w(px(width))
         .h(px(height))
         .overflow_hidden()
         .rounded(px(6.))
         .border_1()
-        .border_color(rgba(0xFFFFFF1A))
-        .bg(rgb(0x0E0C0A));
+        .border_color(if is_dark { rgba(0xFFFFFF1F) } else { rgba(0x00000014) })
+        .bg(if is_dark { rgb(0x202023) } else { rgb(0xEAEAEF) });
     if let Some(p) = path.filter(|p| p.is_file()) {
         frame
             .child(photo_image(p, id, ObjectFit::Cover))
