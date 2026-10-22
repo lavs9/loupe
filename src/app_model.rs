@@ -76,6 +76,7 @@ pub enum ChordKey {
 pub struct GuiSettings {
     pub shortcut: String,
     pub theme: String,
+    pub accent: String,
     pub check_updates: bool,
     pub update_feed: String,
     pub last_check_unix: u64,
@@ -122,6 +123,7 @@ pub fn load_settings() -> GuiSettings {
     let mut settings = GuiSettings {
         shortcut: DEFAULT_SHORTCUT.to_string(),
         theme: THEME_DARKROOM.to_string(),
+        accent: "blue".to_string(),
         check_updates: true,
         update_feed: DEFAULT_UPDATE_FEED.to_string(),
         last_check_unix: 0,
@@ -147,6 +149,15 @@ pub fn load_settings() -> GuiSettings {
                 let value = value.trim();
                 if value == THEME_PAPER || value == THEME_DARKROOM || value == THEME_LIGHT || value == THEME_DARK {
                     settings.theme = value.to_string();
+                }
+            }
+            "accent" => {
+                let value = value.trim().to_ascii_lowercase();
+                if matches!(
+                    value.as_str(),
+                    "blue" | "purple" | "pink" | "red" | "orange" | "yellow" | "green" | "graphite"
+                ) {
+                    settings.accent = value;
                 }
             }
             "check_updates" => settings.check_updates = value.trim() != "false",
@@ -183,9 +194,10 @@ pub fn save_settings(settings: &GuiSettings) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let body = format!(
-        "shortcut={}\ntheme={}\ncheck_updates={}\nopen_at_login={}\nwatch_folders={}\nindex_sweep_hours={}\nupdate_feed={}\nlast_check_unix={}\n",
+        "shortcut={}\ntheme={}\naccent={}\ncheck_updates={}\nopen_at_login={}\nwatch_folders={}\nindex_sweep_hours={}\nupdate_feed={}\nlast_check_unix={}\n",
         settings.shortcut,
         settings.theme,
+        settings.accent,
         if settings.check_updates { "true" } else { "false" },
         if settings.open_at_login { "true" } else { "false" },
         if settings.watch_folders { "true" } else { "false" },

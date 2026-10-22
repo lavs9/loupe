@@ -23,7 +23,6 @@ use gpui_kit::component::empty::{
 };
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::progress::Progress;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::{ScrollableElement, Scrollbar};
 use gpui_kit::component::skeleton::Skeleton;
@@ -31,10 +30,11 @@ use gpui_kit::component::{
     v_virtual_list, ActiveTheme, Sizable, TitleBar, VirtualListScrollHandle,
 };
 use gpui_apple_hig::{
-    apply_apple_theme, MacAccentColor, MacBadge,
-    MacButton, MacButtonVariant, MacKbd,
-    MacSearchField, MacSegment, MacSegmentedControl, MacSettingsGroup, MacSettingsRow, MacStatusBar,
-    MacSwitch, MacToolbar, MacTypographyExt,
+    apply_apple_theme, format_mac_shortcut, MacAccentColor, MacBadge,
+    MacButton, MacButtonVariant, MacKbd, MacMenuItem, MacPathControl,
+    MacPopupButton, MacProgress, MacPullDownButton, MacSearchField, MacSegment,
+    MacSegmentedControl, MacSettingsGroup, MacSettingsRow, MacSpinner, MacSpinnerSize,
+    MacStatusBar, MacSwitch, MacToolbar, MacTypographyExt,
 };
 use gpui_kit::*;
 
@@ -108,7 +108,7 @@ pub fn run() -> Result<()> {
         init(cx);
         cx.set_activation_policy(ActivationPolicy::Accessory);
         let settings = app_model::load_settings();
-        apply_named_theme(&settings.theme, cx);
+        apply_named_theme(&settings.theme, &settings.accent, cx);
         bind_keys(cx);
         cx.set_menus([Menu::new("Loupe").items([
             MenuItem::action("Settings…", OpenSettings),
@@ -167,9 +167,23 @@ fn note(line: &str) {
     let _ = io::stdout().flush();
 }
 
-fn apply_named_theme(name: &str, cx: &mut App) {
+pub fn accent_from_str(s: &str) -> MacAccentColor {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "purple" => MacAccentColor::Purple,
+        "pink" => MacAccentColor::Pink,
+        "red" => MacAccentColor::Red,
+        "orange" => MacAccentColor::Orange,
+        "yellow" => MacAccentColor::Yellow,
+        "green" => MacAccentColor::Green,
+        "graphite" => MacAccentColor::Graphite,
+        _ => MacAccentColor::Blue,
+    }
+}
+
+fn apply_named_theme(name: &str, accent_name: &str, cx: &mut App) {
     let is_dark = name != THEME_PAPER && name != THEME_LIGHT;
-    apply_apple_theme(is_dark, MacAccentColor::Blue, cx);
+    let accent = accent_from_str(accent_name);
+    apply_apple_theme(is_dark, accent, cx);
 }
 
 fn bind_keys(cx: &mut App) {
@@ -200,12 +214,21 @@ fn bind_keys(cx: &mut App) {
     ]);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HitSortOrder {
+    #[default]
+    BestMatch,
+    NameAsc,
+    NameDesc,
+}
+
 struct PhotoApp {
     query_input: Entity<InputState>,
     feed_input: Entity<InputState>,
     shortcut_input: Entity<InputState>,
     query: String,
     hits: Vec<RankedHit>,
+    sort_order: HitSortOrder,
     selected: usize,
     grid: bool,
     screen: Screen,
@@ -364,6 +387,7 @@ impl PhotoApp {
             shortcut_input,
             query: String::new(),
             hits: Vec::new(),
+            sort_order: HitSortOrder::BestMatch,
             selected: 0,
             grid: true,
             screen: Screen::Search,
@@ -557,6 +581,7 @@ impl PhotoApp {
                 match outcome {
                     Ok(outcome) => {
                         view.hits = outcome.hits;
+                        view.apply_sort();
                         view.selected = 0;
                         view.index_line = outcome.index_line.into();
                         view.notes = outcome.notes;
@@ -1305,10 +1330,55 @@ impl PhotoApp {
             return;
         }
         self.settings.theme = name.to_string();
-        apply_named_theme(name, cx);
+        apply_named_theme(name, &self.settings.accent, cx);
         if let Err(err) = save_settings(&self.settings) {
             self.status = err.to_string().into();
         }
+        cx.notify();
+    }
+
+    fn set_accent(&mut self, accent: &str, cx: &mut Context<Self>) {
+        if self.settings.accent == accent {
+            return;
+        }
+        self.settings.accent = accent.to_string();
+        apply_named_theme(&self.settings.theme, accent, cx);
+        if let Err(err) = save_settings(&self.settings) {
+            self.status = err.to_string().into();
+        }
+        cx.notify();
+    }
+
+    fn apply_sort(&mut self) {
+        match self.sort_order {
+            HitSortOrder::BestMatch => {
+                self.hits.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            HitSortOrder::NameAsc => {
+                self.hits.sort_by(|a, b| {
+                    let name_a = file_name(a).to_lowercase();
+                    let name_b = file_name(b).to_lowercase();
+                    name_a.cmp(&name_b)
+                });
+            }
+            HitSortOrder::NameDesc => {
+                self.hits.sort_by(|a, b| {
+                    let name_a = file_name(a).to_lowercase();
+                    let name_b = file_name(b).to_lowercase();
+                    name_b.cmp(&name_a)
+                });
+            }
+        }
+    }
+
+    fn set_sort_order(&mut self, order: HitSortOrder, cx: &mut Context<Self>) {
+        if self.sort_order == order {
+            return;
+        }
+        self.sort_order = order;
+        self.apply_sort();
+        self.selected = 0;
+        self.queue_side_preview(cx);
         cx.notify();
     }
 
@@ -1514,6 +1584,37 @@ impl PhotoApp {
                         }
                     })),
             );
+
+            if !self.hits.is_empty() {
+                let sort_idx = match self.sort_order {
+                    HitSortOrder::BestMatch => 0,
+                    HitSortOrder::NameAsc => 1,
+                    HitSortOrder::NameDesc => 2,
+                };
+                let sort_btn = MacPopupButton::new("sort-order-btn")
+                    .item(MacMenuItem::new("sort-best", "Best Match").icon(IconName::Sparkles))
+                    .item(MacMenuItem::new("sort-az", "Name (A → Z)"))
+                    .item(MacMenuItem::new("sort-za", "Name (Z → A)"))
+                    .selected_index(sort_idx)
+                    .on_change(cx.listener(|this, idx: &usize, _, cx| {
+                        let order = match *idx {
+                            1 => HitSortOrder::NameAsc,
+                            2 => HitSortOrder::NameDesc,
+                            _ => HitSortOrder::BestMatch,
+                        };
+                        this.set_sort_order(order, cx);
+                    }));
+                toolbar = toolbar.trailing(sort_btn);
+
+                let selected_hit = self.hits.get(self.selected).cloned();
+                let action_btn = MacPullDownButton::new("toolbar-actions", "Action")
+                    .icon(IconName::Sparkles)
+                    .disabled(selected_hit.is_none())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.on_open(&OpenResult, window, cx);
+                    }));
+                toolbar = toolbar.trailing(action_btn);
+            }
         }
 
         if !count_label.is_empty() {
@@ -1547,7 +1648,7 @@ impl PhotoApp {
         } else {
             (self.index_note.clone(), true, 0.)
         };
-        div()
+        let mut banner = div()
             .w_full()
             .h(px(INDEX_BANNER_HEIGHT))
             .px_5()
@@ -1556,13 +1657,18 @@ impl PhotoApp {
             .bg(cx.theme().primary.opacity(0.12))
             .flex()
             .items_center()
-            .gap_3()
+            .gap_3();
+
+        if loading && frac <= 0.0 {
+            banner = banner.child(MacSpinner::new("banner-spinner").size(MacSpinnerSize::Small));
+        }
+
+        banner
             .child(
-                Progress::new("work-progress")
-                    .loading(loading)
+                MacProgress::new("work-progress")
                     .value(frac)
-                    .w(px(96.))
-                    .color(cx.theme().primary),
+                    .indeterminate(loading && frac <= 0.0)
+                    .w(px(96.)),
             )
             .child(
                 div()
@@ -1624,12 +1730,14 @@ impl PhotoApp {
                                     .w(px(360.))
                                     .items_center()
                                     .child(
-                                        Progress::new("first-fetch")
-                                            .loading(self.fetch_frac <= 1.)
+                                        MacProgress::new("first-fetch")
                                             .value(self.fetch_frac)
-                                            .w_full()
-                                            .color(cx.theme().primary),
+                                            .indeterminate(self.fetch_frac <= 0.0)
+                                            .w_full(),
                                     )
+                                    .children((self.fetch_frac <= 0.0).then(|| {
+                                        MacSpinner::new("first-fetch-spinner").size(MacSpinnerSize::Regular)
+                                    }))
                                     .child(
                                         div()
                                             .text_sm()
@@ -2126,11 +2234,24 @@ impl PhotoApp {
                             .child(format!("{} of {}", self.selected + 1, self.hits.len())),
                     ),
             )
+            .child({
+                let score_pct = (hit.similarity * 100.0).clamp(0.0, 100.0);
+                let score_badge = MacBadge::new("side-score-badge", format!("{score_pct:.0}% match")).accent();
+                let mut badge_row = h_flex().items_center().gap_2().flex_wrap().child(score_badge);
+                if let Some(ext) = hit.path.extension().and_then(|e| e.to_str()) {
+                    badge_row = badge_row.child(MacBadge::new("side-ext-badge", ext.to_uppercase()).neutral());
+                }
+                if let Some(cam) = &hit.camera_model {
+                    badge_row = badge_row.child(MacBadge::new("side-cam-badge", cam.clone()).neutral());
+                }
+                badge_row
+            })
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
+                    .flex_wrap()
                     .w_full()
                     .child(
                         MacButton::new("side-open")
@@ -2168,7 +2289,19 @@ impl PhotoApp {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.copy_selected(cx);
                             })),
-                    ),
+                    )
+                    .child({
+                        let hit_path_action = hit.path.clone();
+                        MacPullDownButton::new("side-actions-menu", "Actions")
+                            .icon(IconName::Sparkles)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.status = match open_path(&hit_path_action) {
+                                    Ok(()) => format!("Opened {}", hit_path_action.display()).into(),
+                                    Err(err) => err.to_string().into(),
+                                };
+                                cx.notify();
+                            }))
+                    }),
             );
 
         let mut facts = DescriptionList::vertical()
@@ -2203,6 +2336,25 @@ impl PhotoApp {
             facts = facts.item("Aperture", format!("f/{aperture:.1}"), 1);
         }
 
+        let components: Vec<_> = hit.path.components().collect();
+        let mut path_ctrl = MacPathControl::new("side-path-control");
+        let comp_len = components.len();
+        for (idx, comp) in components.iter().enumerate() {
+            let comp_str = comp.as_os_str().to_string_lossy().to_string();
+            if idx == 0 && comp_str == "/" {
+                path_ctrl = path_ctrl.item_with_icon("Macintosh HD", IconName::HardDrive);
+            } else if idx == comp_len - 1 {
+                path_ctrl = path_ctrl.item_with_icon(comp_str, IconName::Image);
+            } else {
+                path_ctrl = path_ctrl.item_with_icon(comp_str, IconName::Folder);
+            }
+        }
+        let hit_path_for_select = hit.path.clone();
+        path_ctrl = path_ctrl.on_select(move |idx, _, _| {
+            let subpath: PathBuf = hit_path_for_select.components().take(idx + 1).collect();
+            let _ = reveal_path(&subpath);
+        });
+
         pane.child(facts).child(
             div()
                 .flex()
@@ -2213,7 +2365,7 @@ impl PhotoApp {
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(div().text_xs().text_color(muted_fg).child("Path"))
+                        .child(div().text_xs().text_color(muted_fg).child("Location"))
                         .child(
                             MacButton::new("copy-path-btn")
                                 .small()
@@ -2228,7 +2380,8 @@ impl PhotoApp {
                                 })),
                         ),
                 )
-                .child(div().text_xs().text_color(muted_fg).child(path)),
+                .child(path_ctrl)
+                .child(div().text_xs().text_color(muted_fg.opacity(0.7)).child(path)),
         )
     }
 
@@ -2659,11 +2812,10 @@ impl PhotoApp {
                                             .pb(px(12.0))
                                             .gap_2()
                                             .child(
-                                                Progress::new("settings-fetch")
-                                                    .loading(self.fetch_frac <= 1.)
+                                                MacProgress::new("settings-fetch")
                                                     .value(self.fetch_frac)
-                                                    .w_full()
-                                                    .color(cx.theme().primary),
+                                                    .indeterminate(self.fetch_frac <= 0.0)
+                                                    .w_full(),
                                             ),
                                     );
                                 }
@@ -2672,7 +2824,7 @@ impl PhotoApp {
                             .child(
                                 MacSettingsGroup::new("theme-group")
                                     .title("Appearance")
-                                    .footer("Loupe adapts to macOS Light and Dark appearance.")
+                                    .footer("Loupe adapts to macOS Light and Dark appearance and system accent colors.")
                                     .row(
                                         MacSettingsRow::new("appearance-row", "Color Theme")
                                             .subtitle("Darkroom dark mode or Paper light table")
@@ -2691,7 +2843,42 @@ impl PhotoApp {
                                                         }
                                                     })),
                                             ),
-                                    ),
+                                    )
+                                    .row({
+                                        let accents = [
+                                            ("Blue", "blue"),
+                                            ("Purple", "purple"),
+                                            ("Pink", "pink"),
+                                            ("Red", "red"),
+                                            ("Orange", "orange"),
+                                            ("Yellow", "yellow"),
+                                            ("Green", "green"),
+                                            ("Graphite", "graphite"),
+                                        ];
+                                        let current_accent = self.settings.accent.to_ascii_lowercase();
+                                        let selected_accent_idx = accents
+                                            .iter()
+                                            .position(|(_, id)| *id == current_accent)
+                                            .unwrap_or(0);
+
+                                        let mut accent_popup = MacPopupButton::new("accent-color-picker")
+                                            .selected_index(selected_accent_idx);
+                                        for (title, id) in &accents {
+                                            accent_popup = accent_popup.item(MacMenuItem::new(*id, *title));
+                                        }
+                                        accent_popup = accent_popup.on_change(cx.listener(|this, idx: &usize, _, cx| {
+                                            let accent_ids = ["blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite"];
+                                            if let Some(&name) = accent_ids.get(*idx) {
+                                                this.set_accent(name, cx);
+                                            }
+                                        }));
+
+                                        MacSettingsRow::new("accent-row", "Accent Color")
+                                            .subtitle("System accent applied to controls and highlights")
+                                            .icon(IconName::Sparkles)
+                                            .icon_color(cx.theme().primary)
+                                            .control(accent_popup)
+                                    }),
                             )
                             .child(
                                 MacSettingsGroup::new("menu-bar-group")
@@ -3000,8 +3187,8 @@ impl PhotoApp {
                                     .gap_1()
                                     .pt_1()
                                     .child(
-                                        Progress::new(("index-row", index))
-                                            .loading(true)
+                                        MacProgress::new(("index-row", index))
+                                            .indeterminate(true)
                                             .w(px(160.))
                                             .color(cx.theme().warning),
                                     )
@@ -3376,10 +3563,8 @@ fn key_chip(action: &dyn Action, context: &str, fallback: &str, window: &Window)
     if let Some(kbd) = Kbd::binding_for_action(action, Some(context), window) {
         return kbd.outline().into_any_element();
     }
-    match Keystroke::parse(fallback) {
-        Ok(stroke) => Kbd::new(stroke).outline().into_any_element(),
-        Err(_) => MacKbd::new(SharedString::from(format!("kchip-{fallback}")), fallback).into_any_element(),
-    }
+    let formatted = format_mac_shortcut(fallback);
+    MacKbd::new(SharedString::from(format!("kchip-{fallback}")), formatted).into_any_element()
 }
 
 fn search_status(hits: &[RankedHit], notes: &[String], index_line: &str) -> SharedString {
