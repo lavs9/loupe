@@ -40,11 +40,11 @@ use gpui_kit::*;
 
 use crate::app_model::{
     self, check_update, copy_file, display_chord, display_thumb, folder_rows, format_chord,
-    index_failure, index_folder_live, index_summary, open_path, open_url, parse_chord, release_url,
-    reveal_path,
-    save_settings, search_photos, update_is_due, write_preview, Chord, ChordKey, DiskKind, FolderRow,
-    GuiSettings, IndexLive, IndexState, UpdateReport, APP_VERSION, THEME_DARK, THEME_DARKROOM,
-    THEME_LIGHT, THEME_PAPER,
+    index_failure, index_folder_live, index_summary, is_theme_dark, open_path, open_url,
+    parse_chord, release_url, reveal_path, save_settings, search_photos, system_is_dark,
+    update_is_due, write_preview, Chord, ChordKey, DiskKind, FolderRow, GuiSettings, IndexLive,
+    IndexState, UpdateReport, APP_VERSION, THEME_DARK, THEME_DARKROOM, THEME_LIGHT, THEME_PAPER,
+    THEME_SYSTEM,
 };
 use crate::embedder::MODEL_ID;
 use crate::gemma::{self, FetchLive, GemmaEmbedder};
@@ -181,7 +181,7 @@ pub fn accent_from_str(s: &str) -> MacAccentColor {
 }
 
 fn apply_named_theme(name: &str, accent_name: &str, cx: &mut App) {
-    let is_dark = name != THEME_PAPER && name != THEME_LIGHT;
+    let is_dark = is_theme_dark(name);
     let accent = accent_from_str(accent_name);
     apply_apple_theme(is_dark, accent, cx);
 }
@@ -514,6 +514,12 @@ impl PhotoApp {
     }
 
     fn present(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.theme == THEME_SYSTEM {
+            let want_dark = system_is_dark();
+            if cx.theme().mode.is_dark() != want_dark {
+                apply_named_theme(&self.settings.theme, &self.settings.accent, cx);
+            }
+        }
         self.parked = false;
         self.screen = Screen::Search;
         self.reveal_window(window, cx);
@@ -1321,16 +1327,16 @@ impl PhotoApp {
     }
 
     fn set_theme(&mut self, name: &str, cx: &mut Context<Self>) {
-        let name = if name == THEME_PAPER || name == THEME_LIGHT {
-            THEME_LIGHT
-        } else {
-            THEME_DARK
+        let canonical = match name {
+            THEME_LIGHT | THEME_PAPER => THEME_LIGHT,
+            THEME_DARK | THEME_DARKROOM => THEME_DARK,
+            _ => THEME_SYSTEM,
         };
-        if self.settings.theme == name {
+        if self.settings.theme == canonical {
             return;
         }
-        self.settings.theme = name.to_string();
-        apply_named_theme(name, &self.settings.accent, cx);
+        self.settings.theme = canonical.to_string();
+        apply_named_theme(canonical, &self.settings.accent, cx);
         if let Err(err) = save_settings(&self.settings) {
             self.status = err.to_string().into();
         }
@@ -1478,6 +1484,12 @@ impl PhotoApp {
     }
 
     fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.theme == THEME_SYSTEM {
+            let want_dark = system_is_dark();
+            if cx.theme().mode.is_dark() != want_dark {
+                apply_named_theme(&self.settings.theme, &self.settings.accent, cx);
+            }
+        }
         self.parked = false;
         self.screen = Screen::Settings;
         self.reveal_window(window, cx);
@@ -2204,7 +2216,7 @@ impl PhotoApp {
                     .flex_1()
                     .min_h(px(360.))
                     .overflow_hidden()
-                    .bg(rgb(0x0E0C0A))
+                    .bg(if cx.theme().mode.is_dark() { rgb(0x0E0C0A) } else { rgb(0xF2F2F7) })
                     .flex()
                     .items_center()
                     .justify_center()
@@ -3063,23 +3075,29 @@ impl PhotoApp {
                             .child(
                                 MacSettingsGroup::new("theme-group")
                                     .title("Appearance")
-                                    .footer("Loupe adapts to macOS Light and Dark appearance and system accent colors.")
+                                    .footer("System appearance automatically follows macOS Light and Dark mode.")
                                     .row(
-                                        MacSettingsRow::new("appearance-row", "Color Theme")
-                                            .subtitle("Darkroom dark mode or Paper light table")
+                                        MacSettingsRow::new("appearance-row", "Appearance")
+                                            .subtitle("Follow macOS automatically, or choose Light or Dark")
                                             .icon(IconName::Sun)
                                             .icon_color(cx.theme().primary)
                                             .control(
                                                 MacSegmentedControl::new("theme-mode")
-                                                    .segment(MacSegment::new("darkroom").label("Darkroom"))
-                                                    .segment(MacSegment::new("paper").label("Paper"))
-                                                    .selected_index(if self.settings.theme == THEME_PAPER { 1 } else { 0 })
+                                                    .segment(MacSegment::new("system").label("System"))
+                                                    .segment(MacSegment::new("light").label("Light"))
+                                                    .segment(MacSegment::new("dark").label("Dark"))
+                                                    .selected_index(match self.settings.theme.as_str() {
+                                                        THEME_LIGHT | THEME_PAPER => 1,
+                                                        THEME_DARK | THEME_DARKROOM => 2,
+                                                        _ => 0,
+                                                    })
                                                     .on_change(cx.listener(|this, idx: &usize, _, cx| {
-                                                        if *idx == 1 {
-                                                            this.set_theme(THEME_PAPER, cx);
-                                                        } else {
-                                                            this.set_theme(THEME_DARKROOM, cx);
-                                                        }
+                                                        let theme = match *idx {
+                                                            1 => THEME_LIGHT,
+                                                            2 => THEME_DARK,
+                                                            _ => THEME_SYSTEM,
+                                                        };
+                                                        this.set_theme(theme, cx);
                                                     })),
                                             ),
                                     )

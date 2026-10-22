@@ -86,10 +86,43 @@ pub struct GuiSettings {
     pub index_sweep_hours: u64,
 }
 
-pub const THEME_DARKROOM: &str = "darkroom";
-pub const THEME_PAPER: &str = "paper";
+pub const THEME_SYSTEM: &str = "system";
 pub const THEME_LIGHT: &str = "light";
 pub const THEME_DARK: &str = "dark";
+
+// Backward compatibility aliases
+pub const THEME_DARKROOM: &str = "darkroom";
+pub const THEME_PAPER: &str = "paper";
+
+/// Returns true if macOS system appearance is in Dark Mode.
+pub fn system_is_dark() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                return s.trim().eq_ignore_ascii_case("dark");
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// Resolves whether a theme name evaluates to dark mode.
+pub fn is_theme_dark(theme: &str) -> bool {
+    match theme.trim().to_ascii_lowercase().as_str() {
+        THEME_LIGHT | THEME_PAPER => false,
+        THEME_DARK | THEME_DARKROOM => true,
+        _ => system_is_dark(),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateReport {
@@ -122,7 +155,7 @@ pub fn settings_path() -> PathBuf {
 pub fn load_settings() -> GuiSettings {
     let mut settings = GuiSettings {
         shortcut: DEFAULT_SHORTCUT.to_string(),
-        theme: THEME_DARKROOM.to_string(),
+        theme: THEME_SYSTEM.to_string(),
         accent: "blue".to_string(),
         check_updates: true,
         update_feed: DEFAULT_UPDATE_FEED.to_string(),
@@ -146,9 +179,12 @@ pub fn load_settings() -> GuiSettings {
                 }
             }
             "theme" => {
-                let value = value.trim();
-                if value == THEME_PAPER || value == THEME_DARKROOM || value == THEME_LIGHT || value == THEME_DARK {
-                    settings.theme = value.to_string();
+                let value = value.trim().to_ascii_lowercase();
+                match value.as_str() {
+                    THEME_SYSTEM | "auto" => settings.theme = THEME_SYSTEM.to_string(),
+                    THEME_LIGHT | THEME_PAPER => settings.theme = THEME_LIGHT.to_string(),
+                    THEME_DARK | THEME_DARKROOM => settings.theme = THEME_DARK.to_string(),
+                    _ => {}
                 }
             }
             "accent" => {
@@ -1081,4 +1117,56 @@ pub fn index_summary(outcome: &IndexOutcome) -> String {
         text.push_str(&format!(" This Mac did not remember the folder. {err}"));
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_theme_dark() {
+        assert!(!is_theme_dark("light"));
+        assert!(!is_theme_dark("LIGHT"));
+        assert!(!is_theme_dark("paper"));
+        assert!(is_theme_dark("dark"));
+        assert!(is_theme_dark("DARK"));
+        assert!(is_theme_dark("darkroom"));
+        assert_eq!(is_theme_dark("system"), system_is_dark());
+        assert_eq!(is_theme_dark("auto"), system_is_dark());
+    }
+
+    #[test]
+    fn test_theme_normalization_logic() {
+        let mut settings = GuiSettings {
+            shortcut: DEFAULT_SHORTCUT.to_string(),
+            theme: THEME_SYSTEM.to_string(),
+            accent: "blue".to_string(),
+            check_updates: true,
+            update_feed: DEFAULT_UPDATE_FEED.to_string(),
+            last_check_unix: 0,
+            open_at_login: false,
+            watch_folders: false,
+            index_sweep_hours: 24,
+        };
+
+        let test_cases = [
+            ("darkroom", THEME_DARK),
+            ("dark", THEME_DARK),
+            ("paper", THEME_LIGHT),
+            ("light", THEME_LIGHT),
+            ("system", THEME_SYSTEM),
+            ("auto", THEME_SYSTEM),
+        ];
+
+        for (input, expected) in test_cases {
+            let val = input.trim().to_ascii_lowercase();
+            match val.as_str() {
+                THEME_SYSTEM | "auto" => settings.theme = THEME_SYSTEM.to_string(),
+                THEME_LIGHT | THEME_PAPER => settings.theme = THEME_LIGHT.to_string(),
+                THEME_DARK | THEME_DARKROOM => settings.theme = THEME_DARK.to_string(),
+                _ => {}
+            }
+            assert_eq!(settings.theme, expected);
+        }
+    }
 }
