@@ -91,7 +91,7 @@ const SEARCH_BAR_HEIGHT: f32 = 52.;
 const STATUS_BAR_HEIGHT: f32 = 28.;
 const INDEX_BANNER_HEIGHT: f32 = 40.;
 const LIST_ROW_HEIGHT: f32 = 88.;
-const TILE_CAPTION: f32 = 40.;
+const TILE_CAPTION: f32 = 54.;
 const PREVIEW_WIDTH: f32 = 440.;
 
 thread_local! {
@@ -2398,10 +2398,38 @@ impl PhotoApp {
         let path_clone = hit.path.clone();
         let path_reveal = hit.path.clone();
 
-        let bg = if selected {
-            cx.theme().accent
+        let is_dark = cx.theme().mode.is_dark();
+        let score_pct = (hit.similarity * 100.0).clamp(0.0, 100.0);
+        let score_color = if score_pct >= 80.0 {
+            rgb(0x34C759)
+        } else if score_pct >= 60.0 {
+            rgb(0x007AFF)
         } else {
-            cx.theme().background
+            rgb(0xFF9500)
+        };
+
+        let ext_str = hit.path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|s| s.to_uppercase());
+
+        let bg = if selected {
+            if is_dark {
+                rgba(0xFFFFFF1F)
+            } else {
+                rgba(0x007AFF14)
+            }
+        } else if is_dark {
+            rgba(0xFFFFFF08)
+        } else {
+            rgba(0x00000004)
+        };
+
+        let border_color: Hsla = if selected {
+            cx.theme().primary
+        } else if is_dark {
+            rgba(0xFFFFFF12).into()
+        } else {
+            rgba(0x0000000E).into()
         };
 
         let mut specs = Vec::new();
@@ -2425,15 +2453,13 @@ impl PhotoApp {
             .gap_3()
             .items_center()
             .px_3()
-            .border_l_2()
-            .border_color(if selected {
-                cx.theme().primary
-            } else {
-                cx.theme().primary.opacity(0.)
-            })
+            .my(px(2.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(border_color)
             .bg(bg)
-            .hover(|s| s.bg(cx.theme().accent))
-            .child(thumb_box(thumb.as_deref(), 96., 72., ("row-thumb", index), cx))
+            .hover(|s| s.bg(if is_dark { rgba(0xFFFFFF14) } else { rgba(0x007AFF0A) }))
+            .child(thumb_box(thumb.as_deref(), 96., 68., ("row-thumb", index), cx))
             .child(
                 div()
                     .flex_1()
@@ -2443,13 +2469,53 @@ impl PhotoApp {
                     .flex_col()
                     .gap_0p5()
                     .child(
-                        div()
-                            .text_sm()
-                            .font_medium()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(name),
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(name),
+                            )
+                            .children(ext_str.map(|ext| {
+                                div()
+                                    .px(px(5.0))
+                                    .py(px(1.0))
+                                    .rounded(px(3.0))
+                                    .bg(if is_dark { rgba(0xFFFFFF1A) } else { rgba(0x0000000D) })
+                                    .mac_caption2()
+                                    .font_semibold()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(ext)
+                            }))
+                            .child(
+                                div()
+                                    .px(px(6.0))
+                                    .py(px(1.0))
+                                    .rounded_full()
+                                    .bg(if is_dark { rgba(0xFFFFFF14) } else { rgba(0x0000000A) })
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .child(
+                                        div()
+                                            .w(px(6.0))
+                                            .h(px(6.0))
+                                            .rounded_full()
+                                            .bg(score_color),
+                                    )
+                                    .child(
+                                        div()
+                                            .mac_caption2()
+                                            .font_semibold()
+                                            .text_color(if is_dark { rgb(0xFFFFFF) } else { rgb(0x1D1D1F) })
+                                            .child(format!("{score_pct:.0}% match")),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
@@ -2522,11 +2588,22 @@ impl PhotoApp {
         let name = file_name(&hit);
         let thumb = self.shown_thumb(&hit);
         let label = hit.label.clone();
-        let border_color = if selected {
-            cx.theme().primary
+        let is_dark = cx.theme().mode.is_dark();
+        let path_clone = hit.path.clone();
+        let path_reveal = hit.path.clone();
+
+        let score_pct = (hit.similarity * 100.0).clamp(0.0, 100.0);
+        let score_color = if score_pct >= 80.0 {
+            rgb(0x34C759)
+        } else if score_pct >= 60.0 {
+            rgb(0x007AFF)
         } else {
-            cx.theme().primary.opacity(0.)
+            rgb(0xFF9500)
         };
+
+        let ext_str = hit.path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|s| s.to_uppercase());
 
         let mut camera_spec = String::new();
         if let Some(focal) = hit.focal_length_mm {
@@ -2538,61 +2615,223 @@ impl PhotoApp {
             }
             camera_spec.push_str(&format!("f/{aperture:.1}"));
         }
+        if let Some(cam) = &hit.camera_model {
+            if !camera_spec.is_empty() {
+                camera_spec = format!("{cam} ({camera_spec})");
+            } else {
+                camera_spec = cam.clone();
+            }
+        }
 
-        div()
+        let card_bg = if selected {
+            if is_dark {
+                rgba(0xFFFFFF1F)
+            } else {
+                rgba(0x007AFF14)
+            }
+        } else if is_dark {
+            rgba(0xFFFFFF0D)
+        } else {
+            rgba(0x00000006)
+        };
+
+        let card_border: Hsla = if selected {
+            cx.theme().primary
+        } else if is_dark {
+            rgba(0xFFFFFF18).into()
+        } else {
+            rgba(0x00000012).into()
+        };
+
+        let mut img_container = div()
+            .w_full()
+            .h(px(tile_h))
+            .rounded(px(6.0))
+            .overflow_hidden()
+            .relative()
+            .bg(rgb(0x0E0C0A))
+            .child(
+                if let Some(p) = thumb.as_deref().filter(|p| p.is_file()) {
+                    photo_image(p, ("tile-img", index), ObjectFit::Cover)
+                } else {
+                    Skeleton::new().size_full().into_any_element()
+                },
+            );
+
+        // Top-right: Frosted glass match badge with confidence dot
+        img_container = img_container.child(
+            div()
+                .absolute()
+                .top_2()
+                .right_2()
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded_full()
+                .bg(rgba(0x000000B3))
+                .border_1()
+                .border_color(rgba(0xFFFFFF33))
+                .shadow_sm()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .w(px(6.0))
+                        .h(px(6.0))
+                        .rounded_full()
+                        .bg(score_color),
+                )
+                .child(
+                    div()
+                        .mac_caption2()
+                        .font_semibold()
+                        .text_color(rgb(0xFFFFFF))
+                        .child(format!("{score_pct:.0}%")),
+                ),
+        );
+
+        // Top-left: Format pill (e.g. HEIC, DNG, RAW)
+        if let Some(ext) = ext_str {
+            img_container = img_container.child(
+                div()
+                    .absolute()
+                    .top_2()
+                    .left_2()
+                    .px(px(5.0))
+                    .py(px(1.5))
+                    .rounded(px(4.0))
+                    .bg(rgba(0x00000099))
+                    .border_1()
+                    .border_color(rgba(0xFFFFFF22))
+                    .mac_caption2()
+                    .font_semibold()
+                    .text_color(rgba(0xFFFFFFD9))
+                    .child(ext),
+            );
+        }
+
+        // Bottom-left: External disk indicator if not This Mac
+        if hit.label != "This Mac" {
+            img_container = img_container.child(
+                div()
+                    .absolute()
+                    .bottom_2()
+                    .left_2()
+                    .px(px(5.0))
+                    .py(px(1.5))
+                    .rounded(px(4.0))
+                    .bg(rgba(0x00000099))
+                    .border_1()
+                    .border_color(rgba(0xFFFFFF22))
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .child(
+                        svg()
+                            .path(IconName::HardDrive.path())
+                            .size(px(9.0))
+                            .text_color(rgba(0xFFFFFFD9)),
+                    )
+                    .child(
+                        div()
+                            .mac_caption2()
+                            .text_color(rgba(0xFFFFFFD9))
+                            .child(label.clone()),
+                    ),
+            );
+        }
+
+        // Bottom-right: Quick Action overlay when selected
+        if selected {
+            img_container = img_container.child(
+                div()
+                    .absolute()
+                    .bottom_2()
+                    .right_2()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(
+                        MacButton::new(SharedString::from(format!("tile-open-{index}")))
+                            .small()
+                            .borderless()
+                            .icon(IconName::ExternalLink)
+                            .tooltip("Open photo (↵)")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let _ = open_path(&path_clone);
+                                this.status = format!("Opened {}", path_clone.display()).into();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        MacButton::new(SharedString::from(format!("tile-reveal-{index}")))
+                            .small()
+                            .borderless()
+                            .icon(IconName::Folder)
+                            .tooltip("Reveal in Finder")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let _ = reveal_path(&path_reveal);
+                                this.status = "Showing in Finder.".into();
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+
+        let mut card = div()
             .id(("tile", index))
             .w(px(tile_w))
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .gap_1()
+            .rounded(px(10.0))
+            .p(px(8.0))
+            .bg(card_bg)
+            .border(if selected { px(2.0) } else { px(1.0) })
+            .border_color(card_border)
+            .cursor_pointer();
+
+        if selected {
+            card = card.shadow_md();
+        } else {
+            card = card
+                .shadow_sm()
+                .hover(|s| s.bg(if is_dark { rgba(0xFFFFFF18) } else { rgba(0x0000000D) }).border_color(cx.theme().primary.opacity(0.4)).shadow_md());
+        }
+
+        card.child(img_container)
             .child(
                 div()
-                    .w_full()
-                    .h(px(tile_h))
-                    .overflow_hidden()
-                    .border_2()
-                    .border_color(border_color)
-                    .bg(rgb(0x0E0C0A))
-                    .child(
-                        if let Some(p) = thumb.as_deref().filter(|p| p.is_file()) {
-                            photo_image(p, ("tile-img", index), ObjectFit::Cover)
-                        } else {
-                            Skeleton::new().size_full().into_any_element()
-                        }
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(2.))
+                    .pt(px(6.0))
+                    .px(px(2.0))
                     .flex()
                     .flex_col()
-                    .gap_0p5()
-                    .opacity(if selected { 1. } else { 0.72 })
+                    .gap(px(2.0))
                     .child(
                         div()
                             .text_xs()
+                            .font_semibold()
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .text_color(if selected {
                                 cx.theme().foreground
                             } else {
-                                cx.theme().muted_foreground
+                                cx.theme().foreground.opacity(0.9)
                             })
                             .child(name),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .mac_caption2()
                             .text_color(cx.theme().muted_foreground)
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .child(if camera_spec.is_empty() {
-                                label
+                            .child(if !camera_spec.is_empty() {
+                                camera_spec
                             } else {
-                                format!("{label}  {camera_spec}")
+                                label
                             }),
                     ),
             )
@@ -3428,7 +3667,9 @@ fn thumb_box(
         .w(px(width))
         .h(px(height))
         .overflow_hidden()
-        .rounded(px(2.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(rgba(0xFFFFFF1A))
         .bg(rgb(0x0E0C0A));
     if let Some(p) = path.filter(|p| p.is_file()) {
         frame
@@ -3612,9 +3853,12 @@ impl SheetMetrics {
         } else {
             (width - SHEET_PAD).max(SHEET_MIN_INNER)
         };
-        let cols = if inner >= 420. { 2 } else { 1 };
+        let ideal_tile_w: f32 = 240.0;
+        let cols = ((inner + TILE_GAP) / (ideal_tile_w + TILE_GAP))
+            .floor()
+            .clamp(1.0, 6.0) as usize;
         let tile_w = ((inner - TILE_GAP * (cols as f32 - 1.)) / cols as f32).floor();
-        let tile_h = (tile_w * 0.78).floor().clamp(200., 400.);
+        let tile_h = (tile_w * 0.72).floor().clamp(150., 320.);
         Self {
             cols,
             tile_w,
