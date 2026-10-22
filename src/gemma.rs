@@ -162,7 +162,22 @@ impl MultimodalEmbedder for GemmaEmbedder {
         let Some((bytes, _)) = image_for_embedding(image_path)? else {
             return Ok(None);
         };
-        Ok(Some(self.embed_parts(&[Part::Image(&bytes)])?))
+        match self.embed_parts(&[Part::Image(&bytes)]) {
+            Ok(embed) => Ok(Some(embed)),
+            Err(err) => {
+                // If LiteRT failed to decode (e.g. unknown image format, progressive JPEG, CMYK),
+                // transcode via image crate to a standard PNG and retry.
+                if let Some(png) = crate::embedder::decode_bytes(&bytes)
+                    .and_then(|img| crate::embedder::encode_png(&img))
+                {
+                    if let Ok(embed) = self.embed_parts(&[Part::Image(&png)]) {
+                        return Ok(Some(embed));
+                    }
+                }
+                tracing::warn!("LiteRT could not decode {}: {err}", image_path.display());
+                Ok(None)
+            }
+        }
     }
 
     fn embed_audio(&self, audio_path: &Path) -> Result<Option<[f32; EMBED_DIM]>> {
