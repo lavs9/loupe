@@ -67,6 +67,40 @@ pub fn is_still(mime: &str) -> bool {
     mime.starts_with("image/")
 }
 
+#[allow(dead_code)]
+pub fn is_audio(mime: &str) -> bool {
+    mime.starts_with("audio/")
+}
+
+#[allow(dead_code)]
+pub fn is_video(mime: &str) -> bool {
+    mime.starts_with("video/")
+}
+
+#[allow(dead_code)]
+pub fn is_playable(mime: &str) -> bool {
+    is_audio(mime) || is_video(mime)
+}
+
+pub fn audio_album_art(path: &Path) -> Option<Vec<u8>> {
+    let tag = id3::Tag::read_from_path(path).ok()?;
+    let art = tag.pictures().next().map(|pic| pic.data.clone());
+    art
+}
+
+#[allow(dead_code)]
+pub fn audio_tag_info(path: &Path) -> Option<String> {
+    let tag = id3::Tag::read_from_path(path).ok()?;
+    let artist = tag.artist().map(|s| s.to_string());
+    let album = tag.album().map(|s| s.to_string());
+    match (artist, album) {
+        (Some(a), Some(al)) => Some(format!("{a} — {al}")),
+        (Some(a), None) => Some(a),
+        (None, Some(al)) => Some(al),
+        (None, None) => None,
+    }
+}
+
 pub fn prepare(
     path: &Path,
     mime: &'static str,
@@ -84,7 +118,9 @@ pub fn prepare(
         let Some(embedding) = embedder.embed_audio(path)? else {
             return Ok(None);
         };
-        let preview = quicklook_image(path).and_then(|bytes| decode_rgb(&bytes));
+        let preview = audio_album_art(path)
+            .or_else(|| quicklook_image(path))
+            .and_then(|bytes| decode_rgb(&bytes));
         return Ok(Some(PreparedFile {
             embedding,
             preview,

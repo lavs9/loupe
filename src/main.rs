@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 mod app_model;
 mod db;
 mod documents;
@@ -8,6 +10,7 @@ mod litert;
 mod gui;
 #[cfg(feature = "gui")]
 mod menu_bar;
+pub mod player;
 mod indexer;
 mod lookup;
 mod parser;

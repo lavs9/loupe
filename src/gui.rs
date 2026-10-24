@@ -36,6 +36,7 @@ use gpui_apple_hig::{
     MacSegmentedControl, MacSettingsGroup, MacSettingsRow, MacSpinner, MacSpinnerSize,
     MacStatusBar, MacSwitch, MacToolbar, MacTypographyExt,
 };
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::app_model::{
@@ -46,11 +47,13 @@ use crate::app_model::{
     IndexState, UpdateReport, APP_VERSION, THEME_DARK, THEME_DARKROOM, THEME_LIGHT, THEME_PAPER,
     THEME_SYSTEM,
 };
+use crate::documents;
 use crate::embedder::MODEL_ID;
 use crate::gemma::{self, FetchLive, GemmaEmbedder};
 use crate::indexer;
 use crate::lookup::RankedHit;
 use crate::menu_bar::{self, TrayCommand};
+use crate::player::{format_duration, query_file_duration, MediaPlayer};
 use crate::sources::{self, DiskMedium};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -283,6 +286,8 @@ struct PhotoApp {
     pending_index: HashSet<PathBuf>,
     last_sweep_unix: u64,
     did_catch_up: bool,
+    player: MediaPlayer,
+    player_tick_task: Option<Task<()>>,
 }
 
 impl PhotoApp {
@@ -461,6 +466,8 @@ impl PhotoApp {
             pending_index: HashSet::new(),
             last_sweep_unix: app_model::unix_now(),
             did_catch_up: false,
+            player: MediaPlayer::new(),
+            player_tick_task: None,
         };
         if due {
             app.spawn_update(cx);
@@ -502,6 +509,7 @@ impl PhotoApp {
     }
 
     fn drop_surfaces(&mut self) {
+        self.stop_media_playback_silent();
         self.search_task = None;
         self.preview_task = None;
         self.thumb_task = None;
@@ -551,6 +559,7 @@ impl PhotoApp {
         if self.parked {
             return;
         }
+        self.stop_media_playback_silent();
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.preview_task = None;
@@ -748,7 +757,11 @@ impl PhotoApp {
         if self.hits.is_empty() {
             return;
         }
-        self.selected = index.min(self.hits.len() - 1);
+        let target = index.min(self.hits.len() - 1);
+        if self.selected != target {
+            self.stop_media_playback_silent();
+        }
+        self.selected = target;
         self.scroll_selected_into_view();
         self.results_focus.focus(window, cx);
         self.queue_side_preview(cx);
@@ -865,6 +878,82 @@ impl PhotoApp {
         self.preview_for = None;
         self.queue_side_preview(cx);
         cx.notify();
+    }
+
+    fn toggle_media_playback(&mut self, cx: &mut Context<Self>) {
+        let Some(hit) = self.hits.get(self.selected) else {
+            return;
+        };
+        let path = hit.path.clone();
+        let fname = file_name(hit);
+        let mime = documents::mime_for_path(&path);
+        if !mime.is_some_and(documents::is_playable) {
+            return;
+        }
+
+        if self.player.current_path() != Some(&path) {
+            if !self.player.load(&path) {
+                self.status = "Could not open media file for playback.".into();
+                cx.notify();
+                return;
+            }
+        }
+
+        self.player.toggle_play_pause();
+        if self.player.is_playing() {
+            self.spawn_player_ticker(cx);
+            self.status = format!("Playing {fname}").into();
+        } else {
+            self.player_tick_task = None;
+            self.status = format!("Paused {fname}").into();
+        }
+        cx.notify();
+    }
+
+    #[allow(dead_code)]
+    fn stop_media_playback(&mut self, cx: &mut Context<Self>) {
+        if self.player.is_loaded() {
+            self.player.stop();
+            self.player_tick_task = None;
+            cx.notify();
+        }
+    }
+
+    fn stop_media_playback_silent(&mut self) {
+        if self.player.is_loaded() {
+            self.player.stop();
+            self.player_tick_task = None;
+        }
+    }
+
+    fn seek_media(&mut self, seconds: f64, cx: &mut Context<Self>) {
+        if self.player.is_loaded() {
+            self.player.seek(seconds);
+            cx.notify();
+        }
+    }
+
+    fn spawn_player_ticker(&mut self, cx: &mut Context<Self>) {
+        self.player_tick_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let still_playing = this.update(cx, |view, cx| {
+                    if view.parked || !view.player.is_playing() {
+                        view.player_tick_task = None;
+                        cx.notify();
+                        false
+                    } else {
+                        cx.notify();
+                        true
+                    }
+                });
+                if still_playing.unwrap_or(false) == false {
+                    break;
+                }
+            }
+        }));
     }
 
     fn start_index(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
@@ -1470,6 +1559,13 @@ impl PhotoApp {
     }
 
     fn on_preview(&mut self, _: &RefreshPreview, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(hit) = self.hits.get(self.selected) {
+            let mime = documents::mime_for_path(&hit.path);
+            if mime.is_some_and(documents::is_playable) {
+                self.toggle_media_playback(cx);
+                return;
+            }
+        }
         self.refresh_preview(cx);
     }
 
@@ -2251,25 +2347,276 @@ impl PhotoApp {
         let hit_reveal = hit.path.clone();
         let hit_copy_path = hit.path.clone();
 
-        pane = pane
-            .child(
-                div()
+        let mime = documents::mime_for_path(&hit.path);
+        let is_audio = mime.is_some_and(documents::is_audio);
+        let is_video = mime.is_some_and(documents::is_video);
+        let is_playable = is_audio || is_video;
+
+        let media_stage = if let Some(p) = preview_img {
+            div()
+                .relative()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(photo_image(p, "side-preview-img", ObjectFit::Contain))
+                .when(is_video, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .top_2()
+                            .left_2()
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded_full()
+                            .bg(rgba(0x1C1C1ECC))
+                            .border_1()
+                            .border_color(rgba(0xFFFFFF33))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(svg().path(IconName::Video.path()).size(px(12.0)).text_color(rgb(0xFFFFFF)))
+                            .child(div().mac_caption2().font_semibold().text_color(rgb(0xFFFFFF)).child("VIDEO"))
+                    )
+                })
+                .when(is_audio, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .top_2()
+                            .left_2()
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded_full()
+                            .bg(rgba(0x1C1C1ECC))
+                            .border_1()
+                            .border_color(rgba(0xFFFFFF33))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(svg().path(IconName::Music.path()).size(px(12.0)).text_color(rgb(0xFFFFFF)))
+                            .child(div().mac_caption2().font_semibold().text_color(rgb(0xFFFFFF)).child("AUDIO"))
+                    )
+                })
+                .into_any_element()
+        } else if is_audio {
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .p_6()
+                .child(
+                    div()
+                        .w(px(72.0))
+                        .h(px(72.0))
+                        .rounded(px(16.0))
+                        .bg(if cx.theme().mode.is_dark() { rgba(0xFFFFFF15) } else { rgba(0x0000000D) })
+                        .border_1()
+                        .border_color(if cx.theme().mode.is_dark() { rgba(0xFFFFFF20) } else { rgba(0x00000015) })
+                        .shadow_sm()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path(IconName::Music.path())
+                                .size(px(34.0))
+                                .text_color(cx.theme().primary)
+                        )
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .text_center()
+                        .child(name.clone())
+                )
+                .when_some(documents::audio_tag_info(&hit.path), |el, tags| {
+                    el.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted_fg)
+                            .text_center()
+                            .child(tags)
+                    )
+                })
+                .into_any_element()
+        } else if is_video {
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(64.0))
+                        .h(px(64.0))
+                        .rounded(px(12.0))
+                        .bg(if cx.theme().mode.is_dark() { rgba(0xFFFFFF15) } else { rgba(0x0000000D) })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path(IconName::Video.path())
+                                .size(px(32.0))
+                                .text_color(cx.theme().primary)
+                        )
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted_fg)
+                        .child("Video Clip")
+                )
+                .into_any_element()
+        } else {
+            Skeleton::new().size_full().into_any_element()
+        };
+
+        pane = pane.child(
+            div()
+                .w_full()
+                .flex_1()
+                .min_h(px(320.))
+                .overflow_hidden()
+                .rounded(px(8.0))
+                .bg(if cx.theme().mode.is_dark() { rgb(0x202023) } else { rgb(0xF2F2F7) })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(media_stage)
+        );
+
+        if is_playable {
+            let is_current = self.player.current_path() == Some(&hit.path);
+            let is_playing = is_current && self.player.is_playing();
+            let cur_time = if is_current {
+                self.player.current_time().unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            let duration = if is_current {
+                self.player.duration()
+            } else {
+                query_file_duration(&hit.path)
+            };
+            let dur = duration.unwrap_or(0.0);
+            let fraction = if dur > 0.0 { (cur_time / dur).clamp(0.0, 1.0) } else { 0.0 };
+
+            let elapsed_str = format_duration(cur_time);
+            let remaining_str = if dur > cur_time {
+                format!("-{}", format_duration(dur - cur_time))
+            } else {
+                format_duration(dur)
+            };
+
+            let hit_path_player = hit.path.clone();
+
+            pane = pane.child(
+                v_flex()
+                    .id("in-app-player")
                     .w_full()
-                    .flex_1()
-                    .min_h(px(360.))
-                    .overflow_hidden()
-                    .bg(if cx.theme().mode.is_dark() { rgb(0x202023) } else { rgb(0xF2F2F7) })
-                    .flex()
-                    .items_center()
-                    .justify_center()
+                    .p_3()
+                    .rounded(px(10.0))
+                    .bg(if cx.theme().mode.is_dark() { rgb(0x28282A) } else { rgb(0xEAEAEF) })
+                    .border_1()
+                    .border_color(if cx.theme().mode.is_dark() { rgba(0xFFFFFF15) } else { rgba(0x00000015) })
+                    .gap_2()
                     .child(
-                        if let Some(p) = preview_img {
-                            photo_image(p, "side-preview-img", ObjectFit::Contain)
-                        } else {
-                            Skeleton::new().size_full().into_any_element()
-                        }
-                    ),
-            )
+                        div()
+                            .id("player-scrubber-track")
+                            .w_full()
+                            .h(px(6.0))
+                            .rounded_full()
+                            .bg(if cx.theme().mode.is_dark() { rgba(0xFFFFFF22) } else { rgba(0x00000018) })
+                            .relative()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(gpui_kit::DefiniteLength::Fraction(fraction as f32))
+                                    .rounded_full()
+                                    .bg(cx.theme().primary)
+                            )
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
+                            .mac_caption2()
+                            .text_color(muted_fg)
+                            .child(elapsed_str)
+                            .child(remaining_str)
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_center()
+                            .gap_2()
+                            .child({
+                                let hit_path_restart = hit_path_player.clone();
+                                MacButton::new("player-restart")
+                                    .small()
+                                    .borderless()
+                                    .tooltip("Restart (0:00)")
+                                    .label("0:00")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if this.player.current_path() != Some(&hit_path_restart) {
+                                            this.player.load(&hit_path_restart);
+                                        }
+                                        this.seek_media(0.0, cx);
+                                    }))
+                            })
+                            .child({
+                                let hit_path_back = hit_path_player.clone();
+                                let target_seek = (cur_time - 15.0).max(0.0);
+                                MacButton::new("player-back-15")
+                                    .small()
+                                    .borderless()
+                                    .tooltip("Back 15s")
+                                    .label("-15s")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if this.player.current_path() != Some(&hit_path_back) {
+                                            this.player.load(&hit_path_back);
+                                        }
+                                        this.seek_media(target_seek, cx);
+                                    }))
+                            })
+                            .child({
+                                MacButton::new("player-play-toggle")
+                                    .prominent()
+                                    .icon(if is_playing { IconName::Pause } else { IconName::Play })
+                                    .label(if is_playing { "Pause" } else { "Play" })
+                                    .tooltip("Play / Pause (Space)")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_media_playback(cx);
+                                    }))
+                            })
+                            .child({
+                                let hit_path_fwd = hit_path_player.clone();
+                                let target_seek = (cur_time + 15.0).min(dur);
+                                MacButton::new("player-fwd-15")
+                                    .small()
+                                    .borderless()
+                                    .tooltip("Forward 15s")
+                                    .label("+15s")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if this.player.current_path() != Some(&hit_path_fwd) {
+                                            this.player.load(&hit_path_fwd);
+                                        }
+                                        this.seek_media(target_seek, cx);
+                                    }))
+                            })
+                    )
+            );
+        }
+
+        let is_playing_this = self.player.is_playing() && self.player.current_path() == Some(&hit.path);
+
+        pane = pane
             .child(
                 div()
                     .flex()
@@ -2294,6 +2641,14 @@ impl PhotoApp {
                 let mut badge_row = h_flex().items_center().gap_2().flex_wrap().child(score_badge);
                 if let Some(ext) = hit.path.extension().and_then(|e| e.to_str()) {
                     badge_row = badge_row.child(MacBadge::new("side-ext-badge", ext.to_uppercase()).neutral());
+                }
+                if is_audio {
+                    badge_row = badge_row.child(MacBadge::new("side-media-badge", "AUDIO").neutral());
+                } else if is_video {
+                    badge_row = badge_row.child(MacBadge::new("side-media-badge", "VIDEO").neutral());
+                }
+                if is_playing_this {
+                    badge_row = badge_row.child(MacBadge::new("side-playing-badge", "NOW PLAYING").accent());
                 }
                 if let Some(cam) = &hit.camera_model {
                     badge_row = badge_row.child(MacBadge::new("side-cam-badge", cam.clone()).neutral());
@@ -2339,7 +2694,7 @@ impl PhotoApp {
                             .small()
                             .icon(IconName::Copy)
                             .label("Copy")
-                            .tooltip("Copy photo to clipboard (⌘C)")
+                            .tooltip("Copy file to clipboard (⌘C)")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.copy_selected(cx);
                             })),
@@ -2380,14 +2735,23 @@ impl PhotoApp {
             }
         }
 
-        if let Some(camera) = &hit.camera_model {
-            facts = facts.item("Camera", camera.clone(), 1);
-        }
-        if let Some(mm) = hit.focal_length_mm {
-            facts = facts.item("Focal Length", format!("{mm:.0} mm"), 1);
-        }
-        if let Some(aperture) = hit.aperture_f {
-            facts = facts.item("Aperture", format!("f/{aperture:.1}"), 1);
+        if is_playable {
+            if let Some(dur) = query_file_duration(&hit.path) {
+                facts = facts.item("Duration", format_duration(dur), 1);
+            }
+            if let Some(tag_info) = documents::audio_tag_info(&hit.path) {
+                facts = facts.item("Audio Info", tag_info, 1);
+            }
+        } else {
+            if let Some(camera) = &hit.camera_model {
+                facts = facts.item("Camera", camera.clone(), 1);
+            }
+            if let Some(mm) = hit.focal_length_mm {
+                facts = facts.item("Focal Length", format!("{mm:.0} mm"), 1);
+            }
+            if let Some(aperture) = hit.aperture_f {
+                facts = facts.item("Aperture", format!("f/{aperture:.1}"), 1);
+            }
         }
 
         let components: Vec<_> = hit.path.components().collect();
@@ -2398,7 +2762,13 @@ impl PhotoApp {
             if idx == 0 && comp_str == "/" {
                 path_ctrl = path_ctrl.item_with_icon("Macintosh HD", IconName::HardDrive);
             } else if idx == comp_len - 1 {
-                path_ctrl = path_ctrl.item_with_icon(comp_str, IconName::Image);
+                if is_audio {
+                    path_ctrl = path_ctrl.item_with_icon(comp_str, IconName::Music);
+                } else if is_video {
+                    path_ctrl = path_ctrl.item_with_icon(comp_str, IconName::Video);
+                } else {
+                    path_ctrl = path_ctrl.item_with_icon(comp_str, IconName::Image);
+                }
             } else {
                 path_ctrl = path_ctrl.item_with_icon(comp_str, IconName::Folder);
             }
@@ -2486,18 +2856,80 @@ impl PhotoApp {
             rgba(0x0000000E).into()
         };
 
+        let mime = documents::mime_for_path(&hit.path);
+        let is_audio = mime.is_some_and(documents::is_audio);
+        let is_video = mime.is_some_and(documents::is_video);
+        let is_playing = self.player.is_playing() && self.player.current_path() == Some(&hit.path);
+
         let mut specs = Vec::new();
         specs.push(hit.label.clone());
-        if let Some(camera) = &hit.camera_model {
-            specs.push(camera.clone());
-        }
-        if let Some(focal) = hit.focal_length_mm {
-            specs.push(format!("{focal:.0}mm"));
-        }
-        if let Some(aperture) = hit.aperture_f {
-            specs.push(format!("f/{aperture:.1}"));
+        if is_audio {
+            if let Some(tag) = documents::audio_tag_info(&hit.path) {
+                specs.push(tag);
+            }
+            if let Some(dur) = query_file_duration(&hit.path) {
+                specs.push(format_duration(dur));
+            }
+        } else if is_video {
+            if let Some(dur) = query_file_duration(&hit.path) {
+                specs.push(format_duration(dur));
+            }
+        } else {
+            if let Some(camera) = &hit.camera_model {
+                specs.push(camera.clone());
+            }
+            if let Some(focal) = hit.focal_length_mm {
+                specs.push(format!("{focal:.0}mm"));
+            }
+            if let Some(aperture) = hit.aperture_f {
+                specs.push(format!("f/{aperture:.1}"));
+            }
         }
         let meta_line = specs.join("  •  ");
+
+        let row_thumb: AnyElement = if let Some(p) = thumb.as_deref().filter(|p| p.is_file()) {
+            thumb_box(Some(p), 96., 68., ("row-thumb", index), cx)
+        } else if is_audio {
+            div()
+                .w(px(96.0))
+                .h(px(68.0))
+                .overflow_hidden()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(if is_dark { rgba(0xFFFFFF1F) } else { rgba(0x00000014) })
+                .bg(if is_dark { rgb(0x202023) } else { rgb(0xEAEAEF) })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path(IconName::Music.path())
+                        .size(px(28.0))
+                        .text_color(if is_dark { rgba(0xFFFFFF88) } else { rgba(0x00000066) })
+                )
+                .into_any_element()
+        } else if is_video {
+            div()
+                .w(px(96.0))
+                .h(px(68.0))
+                .overflow_hidden()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(if is_dark { rgba(0xFFFFFF1F) } else { rgba(0x00000014) })
+                .bg(if is_dark { rgb(0x202023) } else { rgb(0xEAEAEF) })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path(IconName::Video.path())
+                        .size(px(28.0))
+                        .text_color(if is_dark { rgba(0xFFFFFF88) } else { rgba(0x00000066) })
+                )
+                .into_any_element()
+        } else {
+            thumb_box(None, 96., 68., ("row-thumb", index), cx)
+        };
 
         h_flex()
             .id(("hit", index))
@@ -2513,7 +2945,7 @@ impl PhotoApp {
             .border_color(border_color)
             .bg(bg)
             .hover(|s| s.bg(if is_dark { rgba(0xFFFFFF14) } else { rgba(0x007AFF0A) }))
-            .child(thumb_box(thumb.as_deref(), 96., 68., ("row-thumb", index), cx))
+            .child(row_thumb)
             .child(
                 div()
                     .flex_1()
@@ -2569,7 +3001,32 @@ impl PhotoApp {
                                             .text_color(if is_dark { rgb(0xFFFFFF) } else { rgb(0x1D1D1F) })
                                             .child(format!("{score_pct:.0}% match")),
                                     ),
-                            ),
+                            )
+                            .when(is_playing, |el| {
+                                el.child(
+                                    div()
+                                        .px(px(6.0))
+                                        .py(px(1.0))
+                                        .rounded_full()
+                                        .bg(cx.theme().primary)
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(3.0))
+                                        .child(
+                                            svg()
+                                                .path(IconName::Play.path())
+                                                .size(px(8.0))
+                                                .text_color(rgb(0xFFFFFF))
+                                        )
+                                        .child(
+                                            div()
+                                                .mac_caption2()
+                                                .font_semibold()
+                                                .text_color(rgb(0xFFFFFF))
+                                                .child("PLAYING")
+                                        )
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -2659,21 +3116,38 @@ impl PhotoApp {
             .and_then(|ext| ext.to_str())
             .map(|s| s.to_uppercase());
 
+        let mime = documents::mime_for_path(&hit.path);
+        let is_audio = mime.is_some_and(documents::is_audio);
+        let is_video = mime.is_some_and(documents::is_video);
+        let is_playing = self.player.is_playing() && self.player.current_path() == Some(&hit.path);
+
         let mut camera_spec = String::new();
-        if let Some(focal) = hit.focal_length_mm {
-            camera_spec.push_str(&format!("{focal:.0}mm"));
-        }
-        if let Some(aperture) = hit.aperture_f {
-            if !camera_spec.is_empty() {
-                camera_spec.push_str(" • ");
+        if is_audio {
+            if let Some(tag) = documents::audio_tag_info(&hit.path) {
+                camera_spec = tag;
+            } else if let Some(dur) = query_file_duration(&hit.path) {
+                camera_spec = format_duration(dur);
             }
-            camera_spec.push_str(&format!("f/{aperture:.1}"));
-        }
-        if let Some(cam) = &hit.camera_model {
-            if !camera_spec.is_empty() {
-                camera_spec = format!("{cam} ({camera_spec})");
-            } else {
-                camera_spec = cam.clone();
+        } else if is_video {
+            if let Some(dur) = query_file_duration(&hit.path) {
+                camera_spec = format!("Video • {}", format_duration(dur));
+            }
+        } else {
+            if let Some(focal) = hit.focal_length_mm {
+                camera_spec.push_str(&format!("{focal:.0}mm"));
+            }
+            if let Some(aperture) = hit.aperture_f {
+                if !camera_spec.is_empty() {
+                    camera_spec.push_str(" • ");
+                }
+                camera_spec.push_str(&format!("f/{aperture:.1}"));
+            }
+            if let Some(cam) = &hit.camera_model {
+                if !camera_spec.is_empty() {
+                    camera_spec = format!("{cam} ({camera_spec})");
+                } else {
+                    camera_spec = cam.clone();
+                }
             }
         }
 
@@ -2707,10 +3181,66 @@ impl PhotoApp {
             .child(
                 if let Some(p) = thumb.as_deref().filter(|p| p.is_file()) {
                     photo_image(p, ("tile-img", index), ObjectFit::Cover)
+                } else if is_audio {
+                    v_flex()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .child(
+                            svg()
+                                .path(IconName::Music.path())
+                                .size(px(36.0))
+                                .text_color(if is_dark { rgba(0xFFFFFF88) } else { rgba(0x00000066) })
+                        )
+                        .into_any_element()
+                } else if is_video {
+                    v_flex()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .child(
+                            svg()
+                                .path(IconName::Video.path())
+                                .size(px(36.0))
+                                .text_color(if is_dark { rgba(0xFFFFFF88) } else { rgba(0x00000066) })
+                        )
+                        .into_any_element()
                 } else {
                     Skeleton::new().size_full().into_any_element()
                 },
             );
+
+        if is_playing {
+            img_container = img_container.child(
+                div()
+                    .absolute()
+                    .bottom_2()
+                    .right_2()
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded_full()
+                    .bg(cx.theme().primary)
+                    .shadow_sm()
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .child(
+                        svg()
+                            .path(IconName::Play.path())
+                            .size(px(8.0))
+                            .text_color(rgb(0xFFFFFF))
+                    )
+                    .child(
+                        div()
+                            .mac_caption2()
+                            .font_semibold()
+                            .text_color(rgb(0xFFFFFF))
+                            .child("PLAYING")
+                    ),
+            );
+        }
 
         // Top-right: Frosted glass match badge with confidence dot
         img_container = img_container.child(
@@ -3568,7 +4098,12 @@ impl Render for PhotoApp {
             Screen::Settings => self.folders_page(window, cx).into_any_element(),
             Screen::Search => self.search_page(window, cx).into_any_element(),
         };
-        let bottom_bar = search_hint(&self.settings, self.status.clone(), window, cx);
+        let is_playable = self
+            .hits
+            .get(self.selected)
+            .and_then(|h| documents::mime_for_path(&h.path))
+            .is_some_and(documents::is_playable);
+        let bottom_bar = search_hint(&self.settings, self.status.clone(), is_playable, window, cx);
         let viewport = window.viewport_size();
 
         v_flex()
@@ -3766,6 +4301,7 @@ fn index_sentence(folder: &str, live: &IndexLive) -> String {
 fn search_hint(
     _settings: &GuiSettings,
     status_text: SharedString,
+    is_playable: bool,
     window: &Window,
     _cx: &App,
 ) -> impl IntoElement {
@@ -3780,6 +4316,16 @@ fn search_hint(
                 .items_center()
                 .gap_3()
                 .pr(px(PAGE_INSET))
+                .when(is_playable, |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(key_chip(&RefreshPreview, RESULTS, "space", window))
+                            .child("play / pause"),
+                    )
+                })
                 .child(
                     div()
                         .flex()
