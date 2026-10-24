@@ -3877,6 +3877,7 @@ dependencies = [
  "libloading",
  "nfsserve",
  "notify 7.0.0",
+ "objc",
  "pdf-extract",
  "rayon",
  "regex",

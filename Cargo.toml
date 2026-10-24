@@ -6,9 +6,10 @@ description = "Search photos, clips, and songs on this Mac and on disks you plug
 
 [features]
 # The window pulls in GPUI. The command-line build stays the default.
-gui = ["dep:gpui-apple-hig", "dep:gpui-kit", "dep:global-hotkey", "dep:rfd", "dep:tray-icon", "dep:notify"]
+gui = ["dep:gpui-apple-hig", "dep:gpui-kit", "dep:global-hotkey", "dep:rfd", "dep:tray-icon", "dep:notify", "dep:objc"]
 
 [dependencies]
+objc = { version = "0.2.7", optional = true }
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"

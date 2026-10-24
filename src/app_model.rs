@@ -888,6 +888,8 @@ pub fn write_preview(photo: &Path, destination: &Path) -> Result<()> {
 fn write_preview_edge(photo: &Path, destination: &Path, edge: u32) -> Result<()> {
     let bytes = if let Some((bytes, _)) = crate::embedder::image_for_embedding(photo)? {
         bytes
+    } else if let Some(bytes) = crate::documents::audio_album_art(photo) {
+        bytes
     } else if let Some(bytes) = crate::documents::quicklook_image(photo) {
         bytes
     } else {
