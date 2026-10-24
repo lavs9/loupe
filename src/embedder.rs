@@ -27,6 +27,7 @@ pub trait MultimodalEmbedder: Send + Sync {
         audio: Option<&[u8]>,
     ) -> Result<Option<[f32; EMBED_DIM]>>;
     fn embed_text(&self, text: &str) -> Result<[f32; EMBED_DIM]>;
+    #[allow(dead_code)]
     fn embed_document(&self, text: &str) -> Result<[f32; EMBED_DIM]>;
 }
 

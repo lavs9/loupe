@@ -1724,6 +1724,7 @@ impl PhotoApp {
                     .item(MacMenuItem::new("sort-az", "Name (A → Z)"))
                     .item(MacMenuItem::new("sort-za", "Name (Z → A)"))
                     .selected_index(sort_idx)
+                    .anchor(Anchor::TopRight)
                     .on_change(cx.listener(|this, idx: &usize, _, cx| {
                         let order = match *idx {
                             1 => HitSortOrder::NameAsc,
@@ -1735,12 +1736,66 @@ impl PhotoApp {
                 toolbar = toolbar.trailing(sort_btn);
 
                 let selected_hit = self.hits.get(self.selected).cloned();
-                let action_btn = MacPullDownButton::new("toolbar-actions", "Action")
+                let mut action_btn = MacPullDownButton::new("toolbar-actions", "Action")
                     .icon(IconName::Sparkles)
-                    .disabled(selected_hit.is_none())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.on_open(&OpenResult, window, cx);
-                    }));
+                    .anchor(Anchor::TopRight)
+                    .disabled(selected_hit.is_none());
+
+                if let Some(hit) = selected_hit {
+                    let is_media = documents::mime_for_path(&hit.path).is_some_and(documents::is_playable);
+                    let is_playing = self.player.is_playing() && self.player.current_path() == Some(&hit.path);
+                    let hit_path_copy = hit.path.clone();
+
+                    if is_media {
+                        let play_label = if is_playing { "Pause" } else { "Play" };
+                        let play_icon = if is_playing { IconName::Pause } else { IconName::Play };
+                        action_btn = action_btn.item(
+                            MacMenuItem::new("action-play", play_label)
+                                .icon(play_icon)
+                                .shortcut("Space")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.toggle_media_playback(cx);
+                                })),
+                        );
+                    }
+
+                    action_btn = action_btn
+                        .item(
+                            MacMenuItem::new("action-open", "Open in Default App")
+                                .icon(IconName::ExternalLink)
+                                .shortcut("↵")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.open_selected(false, cx);
+                                })),
+                        )
+                        .item(
+                            MacMenuItem::new("action-reveal", "Reveal in Finder")
+                                .icon(IconName::Folder)
+                                .shortcut("⌘↵")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.open_selected(true, cx);
+                                })),
+                        )
+                        .item(
+                            MacMenuItem::new("action-copy", "Copy File / Image")
+                                .icon(IconName::Copy)
+                                .shortcut("⌘C")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.copy_selected(cx);
+                                })),
+                        )
+                        .item(
+                            MacMenuItem::new("action-copy-path", "Copy Full Path")
+                                .shortcut("⌥⌘C")
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    let path_str = hit_path_copy.display().to_string();
+                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(path_str.clone()));
+                                    this.status = format!("Copied path: {}", path_str).into();
+                                    cx.notify();
+                                })),
+                        );
+                }
+
                 toolbar = toolbar.trailing(action_btn);
             }
 
@@ -2701,15 +2756,71 @@ impl PhotoApp {
                     )
                     .child({
                         let hit_path_action = hit.path.clone();
-                        MacPullDownButton::new("side-actions-menu", "Actions")
+                        let hit_path_copy = hit.path.clone();
+                        let hit_reveal_action = hit.path.clone();
+                        let is_media = documents::mime_for_path(&hit.path).is_some_and(documents::is_playable);
+                        let is_playing = self.player.is_playing() && self.player.current_path() == Some(&hit.path);
+
+                        let mut side_actions = MacPullDownButton::new("side-actions-menu", "Actions")
                             .icon(IconName::Sparkles)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.status = match open_path(&hit_path_action) {
-                                    Ok(()) => format!("Opened {}", hit_path_action.display()).into(),
-                                    Err(err) => err.to_string().into(),
-                                };
-                                cx.notify();
-                            }))
+                            .anchor(Anchor::TopRight);
+
+                        if is_media {
+                            let play_label = if is_playing { "Pause" } else { "Play" };
+                            let play_icon = if is_playing { IconName::Pause } else { IconName::Play };
+                            side_actions = side_actions.item(
+                                MacMenuItem::new("side-act-play", play_label)
+                                    .icon(play_icon)
+                                    .shortcut("Space")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.toggle_media_playback(cx);
+                                    })),
+                            );
+                        }
+
+                        side_actions
+                            .item(
+                                MacMenuItem::new("side-act-open", "Open in Default App")
+                                    .icon(IconName::ExternalLink)
+                                    .shortcut("↵")
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        this.status = match open_path(&hit_path_action) {
+                                            Ok(()) => format!("Opened {}", hit_path_action.display()).into(),
+                                            Err(err) => err.to_string().into(),
+                                        };
+                                        cx.notify();
+                                    })),
+                            )
+                            .item(
+                                MacMenuItem::new("side-act-reveal", "Reveal in Finder")
+                                    .icon(IconName::Folder)
+                                    .shortcut("⌘↵")
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        this.status = match reveal_path(&hit_reveal_action) {
+                                            Ok(()) => "Showing it in Finder.".into(),
+                                            Err(err) => err.to_string().into(),
+                                        };
+                                        cx.notify();
+                                    })),
+                            )
+                            .item(
+                                MacMenuItem::new("side-act-copy", "Copy File / Image")
+                                    .icon(IconName::Copy)
+                                    .shortcut("⌘C")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.copy_selected(cx);
+                                    })),
+                            )
+                            .item(
+                                MacMenuItem::new("side-act-copy-path", "Copy Full Path")
+                                    .shortcut("⌥⌘C")
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        let path_str = hit_path_copy.display().to_string();
+                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(path_str.clone()));
+                                        this.status = format!("Copied path: {}", path_str).into();
+                                        cx.notify();
+                                    })),
+                            )
                     }),
             );
 
@@ -4597,5 +4708,25 @@ mod tests {
         let result = copy_file(&img_path);
         let _ = std::fs::remove_file(&img_path);
         assert!(result.is_ok(), "copy_file should succeed on valid image: {:?}", result);
+    }
+
+    #[core::prelude::v1::test]
+    fn test_dropdown_controls_construction() {
+        let sort_btn = MacPopupButton::new("sort-order-btn")
+            .item(MacMenuItem::new("sort-best", "Best Match").icon(IconName::Sparkles))
+            .item(MacMenuItem::new("sort-az", "Name (A → Z)"))
+            .item(MacMenuItem::new("sort-za", "Name (Z → A)"))
+            .selected_index(1)
+            .anchor(Anchor::TopRight);
+        let _ = sort_btn;
+
+        let action_btn = MacPullDownButton::new("toolbar-actions", "Action")
+            .icon(IconName::Sparkles)
+            .anchor(Anchor::TopRight)
+            .item(MacMenuItem::new("act-open", "Open in Default App").shortcut("↵"))
+            .item(MacMenuItem::new("act-reveal", "Reveal in Finder").shortcut("⌘↵"))
+            .item(MacMenuItem::new("act-copy", "Copy File / Image").shortcut("⌘C"))
+            .item(MacMenuItem::new("act-copy-path", "Copy Full Path").shortcut("⌥⌘C"));
+        let _ = action_btn;
     }
 }
