@@ -2304,6 +2304,7 @@ dependencies = [
 [[package]]
 name = "gpui-apple-hig"
 version = "0.1.0"
+source = "git+https://github.com/lavs9/hig-gpui.git#80f1baf7504e0814978c84e185410d66b7f44f2d"
 dependencies = [
  "gpui-kit",
 ]
@@ -3858,7 +3859,7 @@ dependencies = [
 
 [[package]]
 name = "loupe"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",

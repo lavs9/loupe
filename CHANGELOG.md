@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-24
+
+### Added
+- In-app media player for audio (MP3, M4A, FLAC, WAV, AAC) and video (MP4, MOV) playback directly in the preview pane with scrubber, time display, -15s/+15s seeking, and Spacebar play/pause shortcut.
+- Interactive video preview stage with click-to-play, centered play overlay, live "PLAYING" badge, and "Open Video" quick-launch button.
+- Native Apple Human Interface Guidelines redesign powered by `gpui-apple-hig`: macOS toolbar, search field, pull-down action menus, pop-up sort buttons, and path navigation breadcrumbs.
+- Native macOS Appearance Modes: System-based automatic switching, macOS Light Mode, and Apple HIG Dark Graphite mode (replacing pitch black).
+- In-memory async metadata, duration, and audio tag caching for stutter-free 60–120 fps rendering.
+
+### Fixed
+- Video playback stuck on pause due to premature ticker cancellation during AVPlayer state transition.
+- Missing video and unindexed media duration by querying container headers directly via AVURLAsset.
+- Main-thread UI stutter caused by synchronous process execution and disk I/O in grid and list render loops.
+- Search input latency reduced from 250ms thread-blocking sleep to non-blocking 150ms async debounce.
+- Non-standard image formats (grayscale, CMYK, exotic TIFFs) now transcode cleanly via `sips` before LiteRT embedding instead of failing with decode errors.
+
 ## [0.2.1] - 2026-10-18
 
 ### Fixed
