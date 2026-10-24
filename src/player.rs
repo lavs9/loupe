@@ -13,6 +13,9 @@ use objc::{class, msg_send, sel, sel_impl};
 
 #[cfg(all(feature = "gui", target_os = "macos"))]
 #[link(name = "AVFoundation", kind = "framework")]
+extern "C" {}
+
+#[cfg(all(feature = "gui", target_os = "macos"))]
 #[link(name = "CoreMedia", kind = "framework")]
 extern "C" {}
 
@@ -62,6 +65,12 @@ pub struct MediaPlayer {
 
 unsafe impl Send for MediaPlayer {}
 unsafe impl Sync for MediaPlayer {}
+
+impl Default for MediaPlayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MediaPlayer {
     pub fn new() -> Self {
@@ -176,9 +185,13 @@ impl MediaPlayer {
             if self.player.is_null() {
                 return false;
             }
+            let rate: f32 = msg_send![self.player, rate];
+            if rate > 0.0 {
+                return true;
+            }
             // timeControlStatus: 0 = paused, 1 = waitingToPlay, 2 = playing
             let status: i64 = msg_send![self.player, timeControlStatus];
-            status == 2
+            status == 2 || status == 1
         }
         #[cfg(not(all(feature = "gui", target_os = "macos")))]
         {
@@ -211,6 +224,15 @@ impl MediaPlayer {
                     if let Some(secs) = dur.to_seconds() {
                         if secs > 0.0 && !secs.is_nan() && !secs.is_infinite() {
                             return Some(secs);
+                        }
+                    }
+                    let asset: *mut Object = msg_send![item, asset];
+                    if !asset.is_null() {
+                        let dur: CMTime = msg_send![asset, duration];
+                        if let Some(secs) = dur.to_seconds() {
+                            if secs > 0.0 && !secs.is_nan() && !secs.is_infinite() {
+                                return Some(secs);
+                            }
                         }
                     }
                 }
@@ -250,8 +272,34 @@ impl Drop for MediaPlayer {
     }
 }
 
-/// Query duration in seconds via macOS Spotlight metadata (mdls).
+/// Query duration in seconds via macOS AVURLAsset or Spotlight metadata (mdls).
 pub fn query_file_duration(path: &Path) -> Option<f64> {
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    {
+        if let Ok(path_str) = std::ffi::CString::new(path.to_string_lossy().as_bytes()) {
+            unsafe {
+                let cls_string = class!(NSString);
+                let ns_path: *mut Object = msg_send![cls_string, stringWithUTF8String: path_str.as_ptr()];
+                if !ns_path.is_null() {
+                    let cls_url = class!(NSURL);
+                    let ns_url: *mut Object = msg_send![cls_url, fileURLWithPath: ns_path];
+                    if !ns_url.is_null() {
+                        let cls_asset = class!(AVURLAsset);
+                        let asset: *mut Object = msg_send![cls_asset, URLAssetWithURL: ns_url options: std::ptr::null::<Object>()];
+                        if !asset.is_null() {
+                            let dur: CMTime = msg_send![asset, duration];
+                            if let Some(secs) = dur.to_seconds() {
+                                if secs > 0.0 && !secs.is_nan() && !secs.is_infinite() {
+                                    return Some(secs);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(target_os = "macos")]
     {
         let out = std::process::Command::new("/usr/bin/mdls")
@@ -381,5 +429,39 @@ mod tests {
         assert!(!player.is_loaded());
 
         let _ = std::fs::remove_file(&wav_path);
+    }
+
+    #[test]
+    fn test_media_player_playback_mp4() {
+        let mp4_path = PathBuf::from("/tmp/test_video.mp4");
+        if !mp4_path.exists() {
+            return;
+        }
+        let mut player = MediaPlayer::new();
+        assert!(player.load(&mp4_path));
+        assert!(player.is_loaded());
+        assert_eq!(player.current_path(), Some(mp4_path.as_path()));
+
+        // Check that duration is extracted cleanly
+        let dur = player.duration();
+        assert!(dur.is_some(), "Duration should be Some for valid mp4");
+        let dur_secs = dur.unwrap();
+        assert!(dur_secs > 0.0 && dur_secs <= 5.0, "Duration should match video length: {}", dur_secs);
+
+        // Test play
+        player.play();
+        assert!(player.is_playing(), "Player must report is_playing=true after play()");
+
+        // Test pause
+        player.pause();
+        assert!(!player.is_playing(), "Player must report is_playing=false after pause()");
+
+        // Test seek
+        player.seek(1.0);
+
+        // Test stop
+        player.stop();
+        assert!(!player.is_loaded());
+        assert_eq!(player.current_path(), None);
     }
 }

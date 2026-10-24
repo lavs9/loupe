@@ -892,6 +892,8 @@ fn write_preview_edge(photo: &Path, destination: &Path, edge: u32) -> Result<()>
         bytes
     } else if let Some(bytes) = crate::documents::quicklook_image(photo) {
         bytes
+    } else if let Some(bytes) = crate::documents::video_thumbnail(photo) {
+        bytes
     } else {
         bail!("this file has no image to preview");
     };

@@ -225,15 +225,16 @@ fn audio_tags(path: &Path) -> Option<String> {
     }
 }
 
+pub fn video_thumbnail(path: &Path) -> Option<Vec<u8>> {
+    video_frames(path).into_iter().next()
+}
+
 fn video_frames(path: &Path) -> Vec<Vec<u8>> {
     let Some(ffmpeg) = ffmpeg_bin() else {
         return Vec::new();
     };
-    let duration = video_duration(path).unwrap_or(12.0);
-    if duration < 4.0 {
-        return Vec::new();
-    }
-    let at = (duration * 0.4).clamp(1.0, duration - 0.5);
+    let duration = crate::player::query_file_duration(path).unwrap_or(1.0);
+    let at = (duration * 0.4).clamp(0.1, (duration - 0.1).max(0.1));
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|time| time.as_nanos())
@@ -271,21 +272,6 @@ fn ffmpeg_bin() -> Option<&'static str> {
     None
 }
 
-fn video_duration(path: &Path) -> Option<f64> {
-    let out = Command::new("/usr/bin/mdls")
-        .args(["-raw", "-name", "kMDItemDurationSeconds"])
-        .arg(path)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if text == "(null)" {
-        return None;
-    }
-    text.parse().ok()
-}
 
 fn decode_rgb(bytes: &[u8]) -> Option<image::RgbImage> {
     let decoded = ImageReader::new(Cursor::new(bytes))

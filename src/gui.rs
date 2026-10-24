@@ -288,6 +288,9 @@ struct PhotoApp {
     did_catch_up: bool,
     player: MediaPlayer,
     player_tick_task: Option<Task<()>>,
+    duration_cache: std::sync::Mutex<HashMap<PathBuf, f64>>,
+    audio_tags_cache: std::sync::Mutex<HashMap<PathBuf, String>>,
+    file_meta_cache: std::sync::Mutex<HashMap<PathBuf, (String, Option<String>)>>,
 }
 
 impl PhotoApp {
@@ -468,6 +471,9 @@ impl PhotoApp {
             did_catch_up: false,
             player: MediaPlayer::new(),
             player_tick_task: None,
+            duration_cache: std::sync::Mutex::new(HashMap::new()),
+            audio_tags_cache: std::sync::Mutex::new(HashMap::new()),
+            file_meta_cache: std::sync::Mutex::new(HashMap::new()),
         };
         if due {
             app.spawn_update(cx);
@@ -581,10 +587,9 @@ impl PhotoApp {
         cx.notify();
         let embedder = Arc::clone(&self.embedder);
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_spawn(async {
-                std::thread::sleep(Duration::from_millis(250));
-            })
-            .await;
+            cx.background_executor()
+                .timer(Duration::from_millis(150))
+                .await;
             let current = this
                 .update(cx, |view, _| view.generation == generation)
                 .unwrap_or(false);
@@ -682,20 +687,71 @@ impl PhotoApp {
 
     fn shown_thumb(&self, hit: &RankedHit) -> Option<PathBuf> {
         if let Some(path) = self.thumbs.get(&hit.path) {
-            if path.is_file() {
-                return Some(path.clone());
-            }
+            return Some(path.clone());
         }
         let cached = &hit.preview_path;
-        let sharp = cached
-            .metadata()
-            .map(|meta| meta.len() >= 12_000)
-            .unwrap_or(false);
-        if sharp && cached.is_file() {
-            Some(cached.clone())
-        } else {
-            None
+        if let Ok(meta) = cached.metadata() {
+            if meta.is_file() && meta.len() >= 12_000 {
+                return Some(cached.clone());
+            }
         }
+        None
+    }
+
+    fn get_cached_duration(&self, path: &std::path::Path) -> Option<f64> {
+        if let Ok(cache) = self.duration_cache.lock() {
+            if let Some(&dur) = cache.get(path) {
+                return Some(dur);
+            }
+        }
+        if let Some(dur) = query_file_duration(path) {
+            if let Ok(mut cache) = self.duration_cache.lock() {
+                cache.insert(path.to_path_buf(), dur);
+            }
+            return Some(dur);
+        }
+        None
+    }
+
+    fn get_cached_audio_tag(&self, path: &std::path::Path) -> Option<String> {
+        if let Ok(cache) = self.audio_tags_cache.lock() {
+            if let Some(tag) = cache.get(path) {
+                return Some(tag.clone());
+            }
+        }
+        if let Some(tag) = documents::audio_tag_info(path) {
+            if let Ok(mut cache) = self.audio_tags_cache.lock() {
+                cache.insert(path.to_path_buf(), tag.clone());
+            }
+            return Some(tag);
+        }
+        None
+    }
+
+    fn get_cached_file_meta(&self, path: &std::path::Path) -> Option<(String, Option<String>)> {
+        if let Ok(cache) = self.file_meta_cache.lock() {
+            if let Some(val) = cache.get(path) {
+                return Some(val.clone());
+            }
+        }
+        let meta = std::fs::metadata(path).ok()?;
+        let bytes = meta.len();
+        let size_str = if bytes >= 1_048_576 {
+            format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+        } else if bytes >= 1024 {
+            format!("{:.0} KB", bytes as f64 / 1024.0)
+        } else {
+            format!("{bytes} B")
+        };
+        let modified_str = meta.modified().ok().map(|modified| {
+            let dt: chrono::DateTime<chrono::Local> = modified.into();
+            dt.format("%b %-d, %Y %-I:%M %p").to_string()
+        });
+        let res = (size_str, modified_str);
+        if let Ok(mut cache) = self.file_meta_cache.lock() {
+            cache.insert(path.to_path_buf(), res.clone());
+        }
+        Some(res)
     }
 
     fn columns(&self) -> isize {
@@ -891,12 +947,10 @@ impl PhotoApp {
             return;
         }
 
-        if self.player.current_path() != Some(&path) {
-            if !self.player.load(&path) {
-                self.status = "Could not open media file for playback.".into();
-                cx.notify();
-                return;
-            }
+        if self.player.current_path() != Some(&path) && !self.player.load(&path) {
+            self.status = "Could not open media file for playback.".into();
+            cx.notify();
+            return;
         }
 
         self.player.toggle_play_pause();
@@ -937,7 +991,7 @@ impl PhotoApp {
         self.player_tick_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_millis(150))
+                    .timer(Duration::from_millis(100))
                     .await;
                 let still_playing = this.update(cx, |view, cx| {
                     if view.parked || !view.player.is_playing() {
@@ -945,11 +999,20 @@ impl PhotoApp {
                         cx.notify();
                         false
                     } else {
+                        if let (Some(cur), Some(dur)) = (view.player.current_time(), view.player.duration()) {
+                            if dur > 0.0 && cur >= dur - 0.08 {
+                                view.player.pause();
+                                view.player.seek(0.0);
+                                view.player_tick_task = None;
+                                cx.notify();
+                                return false;
+                            }
+                        }
                         cx.notify();
                         true
                     }
                 });
-                if still_playing.unwrap_or(false) == false {
+                if !still_playing.unwrap_or(false) {
                     break;
                 }
             }
@@ -2406,6 +2469,8 @@ impl PhotoApp {
         let is_audio = mime.is_some_and(documents::is_audio);
         let is_video = mime.is_some_and(documents::is_video);
         let is_playable = is_audio || is_video;
+        let is_current = self.player.current_path() == Some(&hit.path);
+        let is_playing = is_current && self.player.is_playing();
 
         let media_stage = if let Some(p) = preview_img {
             div()
@@ -2434,6 +2499,52 @@ impl PhotoApp {
                             .child(div().mac_caption2().font_semibold().text_color(rgb(0xFFFFFF)).child("VIDEO"))
                     )
                 })
+                .when(is_video && is_playing, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .top_2()
+                            .right_2()
+                            .px(px(7.0))
+                            .py(px(2.0))
+                            .rounded_full()
+                            .bg(rgba(0x34C759EE))
+                            .border_1()
+                            .border_color(rgba(0xFFFFFF44))
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .child(div().size(px(6.0)).rounded_full().bg(rgb(0xFFFFFF)))
+                            .child(div().mac_caption2().font_semibold().text_color(rgb(0xFFFFFF)).child("PLAYING"))
+                    )
+                })
+                .when(is_video && !is_playing, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .size(px(52.0))
+                            .rounded_full()
+                            .bg(rgba(0x00000088))
+                            .border_1()
+                            .border_color(rgba(0xFFFFFF44))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .shadow_md()
+                            .child(
+                                svg()
+                                    .path(IconName::Play.path())
+                                    .size(px(24.0))
+                                    .text_color(rgb(0xFFFFFF))
+                            )
+                    )
+                })
+                .when(is_playable, |el| {
+                    el.cursor_pointer()
+                        .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                            this.toggle_media_playback(cx);
+                        }))
+                })
                 .when(is_audio, |el| {
                     el.child(
                         div()
@@ -2461,6 +2572,10 @@ impl PhotoApp {
                 .justify_center()
                 .gap_3()
                 .p_6()
+                .cursor_pointer()
+                .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    this.toggle_media_playback(cx);
+                }))
                 .child(
                     div()
                         .w(px(72.0))
@@ -2475,7 +2590,7 @@ impl PhotoApp {
                         .justify_center()
                         .child(
                             svg()
-                                .path(IconName::Music.path())
+                                .path(if is_playing { IconName::Pause.path() } else { IconName::Music.path() })
                                 .size(px(34.0))
                                 .text_color(cx.theme().primary)
                         )
@@ -2487,7 +2602,7 @@ impl PhotoApp {
                         .text_center()
                         .child(name.clone())
                 )
-                .when_some(documents::audio_tag_info(&hit.path), |el, tags| {
+                .when_some(self.get_cached_audio_tag(&hit.path), |el, tags| {
                     el.child(
                         div()
                             .text_xs()
@@ -2503,6 +2618,10 @@ impl PhotoApp {
                 .items_center()
                 .justify_center()
                 .gap_2()
+                .cursor_pointer()
+                .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    this.toggle_media_playback(cx);
+                }))
                 .child(
                     div()
                         .w(px(64.0))
@@ -2514,7 +2633,7 @@ impl PhotoApp {
                         .justify_center()
                         .child(
                             svg()
-                                .path(IconName::Video.path())
+                                .path(if is_playing { IconName::Pause.path() } else { IconName::Play.path() })
                                 .size(px(32.0))
                                 .text_color(cx.theme().primary)
                         )
@@ -2523,7 +2642,7 @@ impl PhotoApp {
                     div()
                         .text_xs()
                         .text_color(muted_fg)
-                        .child("Video Clip")
+                        .child(if is_playing { "Playing Video Clip" } else { "Click to Play Video" })
                 )
                 .into_any_element()
         } else {
@@ -2555,7 +2674,7 @@ impl PhotoApp {
             let duration = if is_current {
                 self.player.duration()
             } else {
-                query_file_duration(&hit.path)
+                self.get_cached_duration(&hit.path)
             };
             let dur = duration.unwrap_or(0.0);
             let fraction = if dur > 0.0 { (cur_time / dur).clamp(0.0, 1.0) } else { 0.0 };
@@ -2664,6 +2783,24 @@ impl PhotoApp {
                                         }
                                         this.seek_media(target_seek, cx);
                                     }))
+                            })
+                            .when(is_video, |bar| {
+                                let hit_path_open = hit_path_player.clone();
+                                bar.child(
+                                    MacButton::new("player-open-video")
+                                        .small()
+                                        .borderless()
+                                        .icon(IconName::ExternalLink)
+                                        .label("Open Video")
+                                        .tooltip("Open in QuickTime Player / Default App")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.status = match open_path(&hit_path_open) {
+                                                Ok(()) => format!("Opened {}", hit_path_open.display()).into(),
+                                                Err(err) => err.to_string().into(),
+                                            };
+                                            cx.notify();
+                                        }))
+                                )
                             })
                     )
             );
@@ -2830,27 +2967,18 @@ impl PhotoApp {
             .small()
             .item("On", hit.label.clone(), 1);
 
-        if let Ok(meta) = std::fs::metadata(&hit.path) {
-            let bytes = meta.len();
-            let size_str = if bytes >= 1_048_576 {
-                format!("{:.1} MB", bytes as f64 / 1_048_576.0)
-            } else if bytes >= 1024 {
-                format!("{:.0} KB", bytes as f64 / 1024.0)
-            } else {
-                format!("{bytes} B")
-            };
+        if let Some((size_str, modified_opt)) = self.get_cached_file_meta(&hit.path) {
             facts = facts.item("File Size", size_str, 1);
-            if let Ok(modified) = meta.modified() {
-                let dt: chrono::DateTime<chrono::Local> = modified.into();
-                facts = facts.item("Modified", dt.format("%b %-d, %Y %-I:%M %p").to_string(), 1);
+            if let Some(modified) = modified_opt {
+                facts = facts.item("Modified", modified, 1);
             }
         }
 
         if is_playable {
-            if let Some(dur) = query_file_duration(&hit.path) {
+            if let Some(dur) = self.get_cached_duration(&hit.path) {
                 facts = facts.item("Duration", format_duration(dur), 1);
             }
-            if let Some(tag_info) = documents::audio_tag_info(&hit.path) {
+            if let Some(tag_info) = self.get_cached_audio_tag(&hit.path) {
                 facts = facts.item("Audio Info", tag_info, 1);
             }
         } else {
@@ -2975,15 +3103,15 @@ impl PhotoApp {
         let mut specs = Vec::new();
         specs.push(hit.label.clone());
         if is_audio {
-            if let Some(tag) = documents::audio_tag_info(&hit.path) {
+            if let Some(tag) = self.get_cached_audio_tag(&hit.path) {
                 specs.push(tag);
             }
-            if let Some(dur) = query_file_duration(&hit.path) {
+            if let Some(dur) = self.get_cached_duration(&hit.path) {
                 specs.push(format_duration(dur));
             }
         } else if is_video {
-            if let Some(dur) = query_file_duration(&hit.path) {
-                specs.push(format_duration(dur));
+            if let Some(dur) = self.get_cached_duration(&hit.path) {
+                specs.push(format!("Video • {}", format_duration(dur)));
             }
         } else {
             if let Some(camera) = &hit.camera_model {
@@ -3234,13 +3362,13 @@ impl PhotoApp {
 
         let mut camera_spec = String::new();
         if is_audio {
-            if let Some(tag) = documents::audio_tag_info(&hit.path) {
+            if let Some(tag) = self.get_cached_audio_tag(&hit.path) {
                 camera_spec = tag;
-            } else if let Some(dur) = query_file_duration(&hit.path) {
+            } else if let Some(dur) = self.get_cached_duration(&hit.path) {
                 camera_spec = format_duration(dur);
             }
         } else if is_video {
-            if let Some(dur) = query_file_duration(&hit.path) {
+            if let Some(dur) = self.get_cached_duration(&hit.path) {
                 camera_spec = format!("Video • {}", format_duration(dur));
             }
         } else {
