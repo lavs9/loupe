@@ -59,6 +59,10 @@ pub fn mime_for_path(path: &Path) -> Option<&'static str> {
         "webm" => Some("video/webm"),
         "mpg" | "mpeg" => Some("video/mpeg"),
         "3gp" => Some("video/3gpp"),
+        "pdf" => Some("application/pdf"),
+        "epub" => Some("application/epub+zip"),
+        "txt" | "md" | "rtf" => Some("text/plain"),
+        "doc" | "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         _ => None,
     }
 }
@@ -75,6 +79,11 @@ pub fn is_audio(mime: &str) -> bool {
 #[allow(dead_code)]
 pub fn is_video(mime: &str) -> bool {
     mime.starts_with("video/")
+}
+
+#[allow(dead_code)]
+pub fn is_document(mime: &str) -> bool {
+    mime.starts_with("application/") || mime.starts_with("text/")
 }
 
 #[allow(dead_code)]

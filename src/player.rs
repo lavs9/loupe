@@ -61,6 +61,8 @@ pub struct MediaPlayer {
     player: *mut Object,
     current_path: Option<PathBuf>,
     cached_duration: Option<f64>,
+    volume: f32,
+    muted: bool,
 }
 
 unsafe impl Send for MediaPlayer {}
@@ -79,6 +81,8 @@ impl MediaPlayer {
             player: std::ptr::null_mut(),
             current_path: None,
             cached_duration: None,
+            volume: 1.0,
+            muted: false,
         }
     }
 
@@ -137,6 +141,9 @@ impl MediaPlayer {
             }
 
             let _: () = msg_send![player, retain];
+            let _: () = msg_send![player, setVolume: self.volume];
+            let is_muted_i8: i8 = if self.muted { 1 } else { 0 };
+            let _: () = msg_send![player, setMuted: is_muted_i8];
             self.player = player;
             true
         }
@@ -250,6 +257,39 @@ impl MediaPlayer {
                 let _: () = msg_send![self.player, seekToTime: target];
             }
         }
+    }
+
+    pub fn volume(&self) -> f32 {
+        self.volume
+    }
+
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume.clamp(0.0, 1.0);
+        #[cfg(all(feature = "gui", target_os = "macos"))]
+        unsafe {
+            if !self.player.is_null() {
+                let _: () = msg_send![self.player, setVolume: self.volume];
+            }
+        }
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted
+    }
+
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+        #[cfg(all(feature = "gui", target_os = "macos"))]
+        unsafe {
+            if !self.player.is_null() {
+                let is_muted_i8: i8 = if self.muted { 1 } else { 0 };
+                let _: () = msg_send![self.player, setMuted: is_muted_i8];
+            }
+        }
+    }
+
+    pub fn toggle_mute(&mut self) {
+        self.set_muted(!self.muted);
     }
 
     pub fn stop(&mut self) {
@@ -377,6 +417,11 @@ mod tests {
         assert!(is_playable("audio/mpeg"));
         assert!(is_playable("video/mp4"));
         assert!(!is_playable("image/jpeg"));
+
+        assert!(is_document("application/pdf"));
+        assert!(is_document("text/plain"));
+        assert!(!is_document("image/jpeg"));
+        assert!(!is_document("video/mp4"));
     }
 
     #[test]
@@ -463,5 +508,27 @@ mod tests {
         player.stop();
         assert!(!player.is_loaded());
         assert_eq!(player.current_path(), None);
+    }
+
+    #[test]
+    fn test_media_player_volume_and_mute() {
+        let mut player = MediaPlayer::new();
+        assert_eq!(player.volume(), 1.0);
+        assert!(!player.is_muted());
+
+        player.set_volume(0.5);
+        assert_eq!(player.volume(), 0.5);
+
+        player.set_volume(1.5); // clamps to 1.0
+        assert_eq!(player.volume(), 1.0);
+
+        player.set_volume(-0.5); // clamps to 0.0
+        assert_eq!(player.volume(), 0.0);
+
+        player.set_muted(true);
+        assert!(player.is_muted());
+
+        player.toggle_mute();
+        assert!(!player.is_muted());
     }
 }

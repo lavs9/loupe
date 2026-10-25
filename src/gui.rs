@@ -29,11 +29,12 @@ use gpui_kit::component::skeleton::Skeleton;
 use gpui_kit::component::{
     v_virtual_list, ActiveTheme, Sizable, VirtualListScrollHandle,
 };
+use chrono::Datelike;
 use gpui_apple_hig::{
     apply_apple_theme, format_mac_shortcut, MacAccentColor, MacBadge,
     MacButton, MacButtonVariant, MacKbd, MacMenuItem, MacPathControl,
     MacPopupButton, MacProgress, MacPullDownButton, MacSearchField, MacSegment,
-    MacSegmentedControl, MacSettingsGroup, MacSettingsRow, MacSpinner, MacSpinnerSize,
+    MacSegmentedControl, MacSettingsGroup, MacSettingsRow, MacSlider, MacSpinner, MacSpinnerSize,
     MacStatusBar, MacSwitch, MacToolbar, MacTypographyExt,
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -73,6 +74,8 @@ actions!(
         QuitApp,
         FocusSearch,
         OpenSettings,
+        NextTrack,
+        PrevTrack,
     ]
 );
 
@@ -219,7 +222,35 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-,", OpenSettings, Some(SEARCH)),
         KeyBinding::new("secondary-,", OpenSettings, Some(RESULTS)),
+        KeyBinding::new("secondary-right", NextTrack, Some(RESULTS)),
+        KeyBinding::new("secondary-right", NextTrack, Some(SEARCH)),
+        KeyBinding::new("secondary-left", PrevTrack, Some(RESULTS)),
+        KeyBinding::new("secondary-left", PrevTrack, Some(SEARCH)),
+        KeyBinding::new("j", NextTrack, Some(RESULTS)),
+        KeyBinding::new("k", PrevTrack, Some(RESULTS)),
     ]);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaFilter {
+    #[default]
+    All,
+    Photos,
+    Videos,
+    Audio,
+    Documents,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DateFilter {
+    #[default]
+    AllDates,
+    Past24Hours,
+    Past7Days,
+    Past30Days,
+    ThisYear,
+    PastYear,
+    Older,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -235,7 +266,11 @@ struct PhotoApp {
     feed_input: Entity<InputState>,
     shortcut_input: Entity<InputState>,
     query: String,
+    raw_hits: Vec<RankedHit>,
     hits: Vec<RankedHit>,
+    media_filter: MediaFilter,
+    date_filter: DateFilter,
+    camera_filter: Option<String>,
     sort_order: HitSortOrder,
     selected: usize,
     grid: bool,
@@ -288,9 +323,11 @@ struct PhotoApp {
     did_catch_up: bool,
     player: MediaPlayer,
     player_tick_task: Option<Task<()>>,
+    is_scrubbing: bool,
     duration_cache: std::sync::Mutex<HashMap<PathBuf, f64>>,
     audio_tags_cache: std::sync::Mutex<HashMap<PathBuf, String>>,
     file_meta_cache: std::sync::Mutex<HashMap<PathBuf, (String, Option<String>)>>,
+    file_mtime_cache: std::sync::Mutex<HashMap<PathBuf, Option<std::time::SystemTime>>>,
 }
 
 impl PhotoApp {
@@ -399,7 +436,11 @@ impl PhotoApp {
             feed_input,
             shortcut_input,
             query: String::new(),
+            raw_hits: Vec::new(),
             hits: Vec::new(),
+            media_filter: MediaFilter::All,
+            date_filter: DateFilter::AllDates,
+            camera_filter: None,
             sort_order: HitSortOrder::BestMatch,
             selected: 0,
             grid: true,
@@ -471,9 +512,11 @@ impl PhotoApp {
             did_catch_up: false,
             player: MediaPlayer::new(),
             player_tick_task: None,
+            is_scrubbing: false,
             duration_cache: std::sync::Mutex::new(HashMap::new()),
             audio_tags_cache: std::sync::Mutex::new(HashMap::new()),
             file_meta_cache: std::sync::Mutex::new(HashMap::new()),
+            file_mtime_cache: std::sync::Mutex::new(HashMap::new()),
         };
         if due {
             app.spawn_update(cx);
@@ -572,6 +615,7 @@ impl PhotoApp {
         let query = self.query.trim().to_string();
         if query.is_empty() {
             self.search_task = None;
+            self.raw_hits.clear();
             self.hits.clear();
             self.notes.clear();
             self.errors.clear();
@@ -605,8 +649,8 @@ impl PhotoApp {
                 }
                 match outcome {
                     Ok(outcome) => {
-                        view.hits = outcome.hits;
-                        view.apply_sort();
+                        view.raw_hits = outcome.hits;
+                        view.apply_filters_and_sort();
                         view.selected = 0;
                         view.index_line = outcome.index_line.into();
                         view.notes = outcome.notes;
@@ -615,6 +659,7 @@ impl PhotoApp {
                         view.status = search_status(&view.hits, &view.notes, &view.index_line);
                     }
                     Err(err) => {
+                        view.raw_hits.clear();
                         view.hits.clear();
                         view.selected = 0;
                         view.thumbs.clear();
@@ -1545,6 +1590,215 @@ impl PhotoApp {
         cx.notify();
     }
 
+    fn hit_matches_media(hit: &RankedHit, filter: MediaFilter) -> bool {
+        match filter {
+            MediaFilter::All => true,
+            MediaFilter::Photos => {
+                if let Some(mime) = documents::mime_for_path(&hit.path) {
+                    documents::is_still(mime)
+                } else {
+                    true
+                }
+            }
+            MediaFilter::Videos => {
+                documents::mime_for_path(&hit.path).is_some_and(documents::is_video)
+            }
+            MediaFilter::Audio => {
+                documents::mime_for_path(&hit.path).is_some_and(documents::is_audio)
+            }
+            MediaFilter::Documents => {
+                documents::mime_for_path(&hit.path).is_some_and(documents::is_document)
+            }
+        }
+    }
+
+    fn get_file_mtime(&self, path: &std::path::Path) -> Option<std::time::SystemTime> {
+        if let Ok(cache) = self.file_mtime_cache.lock() {
+            if let Some(val) = cache.get(path) {
+                return *val;
+            }
+        }
+        let mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+        if let Ok(mut cache) = self.file_mtime_cache.lock() {
+            cache.insert(path.to_path_buf(), mtime);
+        }
+        mtime
+    }
+
+    fn hit_matches_date(&self, hit: &RankedHit, filter: DateFilter) -> bool {
+        if matches!(filter, DateFilter::AllDates) {
+            return true;
+        }
+        let Some(mtime) = self.get_file_mtime(&hit.path) else {
+            return false;
+        };
+        let Ok(elapsed) = std::time::SystemTime::now().duration_since(mtime) else {
+            return false;
+        };
+        let secs = elapsed.as_secs();
+        match filter {
+            DateFilter::AllDates => true,
+            DateFilter::Past24Hours => secs <= 86_400,
+            DateFilter::Past7Days => secs <= 7 * 86_400,
+            DateFilter::Past30Days => secs <= 30 * 86_400,
+            DateFilter::ThisYear => {
+                let dt: chrono::DateTime<chrono::Local> = mtime.into();
+                let now: chrono::DateTime<chrono::Local> = chrono::Local::now();
+                dt.year() == now.year()
+            }
+            DateFilter::PastYear => secs <= 365 * 86_400,
+            DateFilter::Older => secs > 365 * 86_400,
+        }
+    }
+
+    fn apply_filters_and_sort(&mut self) {
+        let media_filter = self.media_filter;
+        let date_filter = self.date_filter;
+        let camera_filter = self.camera_filter.clone();
+
+        self.hits = self
+            .raw_hits
+            .iter()
+            .filter(|hit| {
+                if !Self::hit_matches_media(hit, media_filter) {
+                    return false;
+                }
+                if !self.hit_matches_date(hit, date_filter) {
+                    return false;
+                }
+                if let Some(ref req_cam) = camera_filter {
+                    if hit.camera_model.as_deref() != Some(req_cam.as_str()) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect();
+
+        self.apply_sort();
+        if self.selected >= self.hits.len() {
+            self.selected = 0;
+        }
+    }
+
+    fn set_media_filter(&mut self, filter: MediaFilter, cx: &mut Context<Self>) {
+        if self.media_filter == filter {
+            return;
+        }
+        self.media_filter = filter;
+        self.apply_filters_and_sort();
+        self.selected = 0;
+        self.status = search_status(&self.hits, &self.notes, &self.index_line);
+        self.queue_side_preview(cx);
+        cx.notify();
+    }
+
+    fn set_date_filter(&mut self, filter: DateFilter, cx: &mut Context<Self>) {
+        if self.date_filter == filter {
+            return;
+        }
+        self.date_filter = filter;
+        self.apply_filters_and_sort();
+        self.selected = 0;
+        self.status = search_status(&self.hits, &self.notes, &self.index_line);
+        self.queue_side_preview(cx);
+        cx.notify();
+    }
+
+    fn set_camera_filter(&mut self, filter: Option<String>, cx: &mut Context<Self>) {
+        if self.camera_filter == filter {
+            return;
+        }
+        self.camera_filter = filter;
+        self.apply_filters_and_sort();
+        self.selected = 0;
+        self.status = search_status(&self.hits, &self.notes, &self.index_line);
+        self.queue_side_preview(cx);
+        cx.notify();
+    }
+
+    fn reset_filters(&mut self, cx: &mut Context<Self>) {
+        if self.media_filter == MediaFilter::All
+            && self.date_filter == DateFilter::AllDates
+            && self.camera_filter.is_none()
+        {
+            return;
+        }
+        self.media_filter = MediaFilter::All;
+        self.date_filter = DateFilter::AllDates;
+        self.camera_filter = None;
+        self.apply_filters_and_sort();
+        self.selected = 0;
+        self.status = search_status(&self.hits, &self.notes, &self.index_line);
+        self.queue_side_preview(cx);
+        cx.notify();
+    }
+
+    fn on_next_track(&mut self, _: &NextTrack, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.hits.is_empty() {
+            return;
+        }
+        let was_playing = self.player.is_playing();
+        if self.selected + 1 < self.hits.len() {
+            self.selected += 1;
+        } else {
+            self.selected = 0;
+        }
+        self.scroll_selected_into_view();
+        self.queue_side_preview(cx);
+        if was_playing {
+            if let Some(hit) = self.hits.get(self.selected) {
+                let is_media = documents::mime_for_path(&hit.path).is_some_and(documents::is_playable);
+                if is_media {
+                    if self.player.load(&hit.path) {
+                        self.player.play();
+                        self.spawn_player_ticker(cx);
+                    }
+                } else {
+                    self.stop_media_playback_silent();
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_prev_track(&mut self, _: &PrevTrack, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.hits.is_empty() {
+            return;
+        }
+        let was_playing = self.player.is_playing();
+        if was_playing {
+            if let Some(cur) = self.player.current_time() {
+                if cur > 3.0 {
+                    self.seek_media(0.0, cx);
+                    return;
+                }
+            }
+        }
+        if self.selected > 0 {
+            self.selected -= 1;
+        } else {
+            self.selected = self.hits.len().saturating_sub(1);
+        }
+        self.scroll_selected_into_view();
+        self.queue_side_preview(cx);
+        if was_playing {
+            if let Some(hit) = self.hits.get(self.selected) {
+                let is_media = documents::mime_for_path(&hit.path).is_some_and(documents::is_playable);
+                if is_media {
+                    if self.player.load(&hit.path) {
+                        self.player.play();
+                        self.spawn_player_ticker(cx);
+                    }
+                } else {
+                    self.stop_media_playback_silent();
+                }
+            }
+        }
+        cx.notify();
+    }
+
     fn spawn_update(&mut self, cx: &mut Context<Self>) {
         let feed = self.settings.update_feed.clone();
         self.update_line = "Checking for an update…".into();
@@ -1950,6 +2204,9 @@ impl PhotoApp {
         let mut chrome = TITLE_CHROME + STATUS_BAR_HEIGHT;
         if matches!(self.screen, Screen::Search) && !self.fetching {
             chrome += SEARCH_BAR_HEIGHT;
+            if !self.raw_hits.is_empty() {
+                chrome += 38.0;
+            }
         }
         if self.busy || (self.fetching && matches!(self.screen, Screen::Settings)) {
             chrome += INDEX_BANNER_HEIGHT;
@@ -2207,6 +2464,13 @@ impl PhotoApp {
     }
 
     fn no_results_view(&self, work_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_raw = !self.raw_hits.is_empty();
+        let desc = if has_raw {
+            "No photos or files match your active media, date, or camera filter. Reset filters to see all results."
+        } else {
+            "Try fewer words, or open Settings and index the folder that holds the photos."
+        };
+        let btn_label = if has_raw { "Reset Filters" } else { "Clear" };
         v_flex()
             .id("no-results")
             .w_full()
@@ -2220,28 +2484,197 @@ impl PhotoApp {
                             .media(
                                 EmptyMedia::new()
                                     .with_variant(EmptyMediaVariant::Icon)
-                                    .child(IconName::Image),
+                                    .child(if has_raw { IconName::ListFilter } else { IconName::Image }),
                             )
                             .title(
                                 EmptyTitle::new()
                                     .text_lg()
-                                    .child("Nothing matched that."),
+                                    .child(if has_raw { "No filtered matches." } else { "Nothing matched that." }),
                             )
-                            .description(EmptyDescription::new().child(
-                                "Try fewer words, or open Settings and index the folder that holds the photos.",
-                            )),
+                            .description(EmptyDescription::new().child(desc)),
                     )
                     .content(
                         EmptyContent::new().child(
                             MacButton::new("clear-query-btn")
                                 .small()
                                 .borderless()
-                                .label("Clear")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.clear_query(window, cx);
+                                .label(btn_label)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if has_raw {
+                                        this.reset_filters(cx);
+                                    } else {
+                                        this.clear_query(window, cx);
+                                    }
                                 })),
                         ),
                     ),
+            )
+    }
+
+    fn filter_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let border = cx.theme().border;
+
+        // 1. Calculate media facet counts
+        let mut photo_cnt = 0;
+        let mut video_cnt = 0;
+        let mut audio_cnt = 0;
+        let mut doc_cnt = 0;
+        let all_cnt = self.raw_hits.len();
+
+        for hit in &self.raw_hits {
+            if let Some(mime) = documents::mime_for_path(&hit.path) {
+                if documents::is_video(mime) {
+                    video_cnt += 1;
+                } else if documents::is_audio(mime) {
+                    audio_cnt += 1;
+                } else if documents::is_document(mime) {
+                    doc_cnt += 1;
+                } else {
+                    photo_cnt += 1;
+                }
+            } else {
+                photo_cnt += 1;
+            }
+        }
+
+        let media_idx = match self.media_filter {
+            MediaFilter::All => 0,
+            MediaFilter::Photos => 1,
+            MediaFilter::Videos => 2,
+            MediaFilter::Audio => 3,
+            MediaFilter::Documents => 4,
+        };
+
+        let seg_ctrl = MacSegmentedControl::new("media-facet-control")
+            .selected_index(media_idx)
+            .segment(MacSegment::new("facet-all").label(format!("All ({all_cnt})")))
+            .segment(MacSegment::new("facet-photos").label(format!("Photos ({photo_cnt})")).icon(IconName::Image))
+            .segment(MacSegment::new("facet-videos").label(format!("Videos ({video_cnt})")).icon(IconName::Video))
+            .segment(MacSegment::new("facet-audio").label(format!("Audio ({audio_cnt})")).icon(IconName::Music))
+            .segment(MacSegment::new("facet-docs").label(format!("Docs ({doc_cnt})")).icon(IconName::FileText))
+            .on_change(cx.listener(|this, idx: &usize, _, cx| {
+                let filter = match *idx {
+                    1 => MediaFilter::Photos,
+                    2 => MediaFilter::Videos,
+                    3 => MediaFilter::Audio,
+                    4 => MediaFilter::Documents,
+                    _ => MediaFilter::All,
+                };
+                this.set_media_filter(filter, cx);
+            }));
+
+        // 2. Date filter popup button
+        let date_idx = match self.date_filter {
+            DateFilter::AllDates => 0,
+            DateFilter::Past24Hours => 1,
+            DateFilter::Past7Days => 2,
+            DateFilter::Past30Days => 3,
+            DateFilter::ThisYear => 4,
+            DateFilter::PastYear => 5,
+            DateFilter::Older => 6,
+        };
+
+        let date_popup = MacPopupButton::new("filter-date-popup")
+            .selected_index(date_idx)
+            .anchor(Anchor::TopRight)
+            .item(MacMenuItem::new("df-all", "All Dates").icon(IconName::Calendar))
+            .item(MacMenuItem::new("df-24h", "Past 24 Hours"))
+            .item(MacMenuItem::new("df-7d", "Past 7 Days"))
+            .item(MacMenuItem::new("df-30d", "Past 30 Days"))
+            .item(MacMenuItem::new("df-this-yr", "This Year"))
+            .item(MacMenuItem::new("df-past-yr", "Past Year"))
+            .item(MacMenuItem::new("df-older", "Older than 1 Year"))
+            .on_change(cx.listener(|this, idx: &usize, _, cx| {
+                let filter = match *idx {
+                    1 => DateFilter::Past24Hours,
+                    2 => DateFilter::Past7Days,
+                    3 => DateFilter::Past30Days,
+                    4 => DateFilter::ThisYear,
+                    5 => DateFilter::PastYear,
+                    6 => DateFilter::Older,
+                    _ => DateFilter::AllDates,
+                };
+                this.set_date_filter(filter, cx);
+            }));
+
+        // 3. Camera model popup button (if cameras are present in raw_hits)
+        let mut cameras: Vec<String> = self.raw_hits
+            .iter()
+            .filter_map(|h| h.camera_model.as_ref())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        cameras.sort();
+
+        let has_cameras = !cameras.is_empty();
+        let cam_idx = if let Some(ref cam) = self.camera_filter {
+            cameras.iter().position(|c| c == cam).map(|p| p + 1).unwrap_or(0)
+        } else {
+            0
+        };
+
+        let mut cam_popup = MacPopupButton::new("filter-camera-popup")
+            .selected_index(cam_idx)
+            .anchor(Anchor::TopRight)
+            .item(MacMenuItem::new("cam-all", "All Cameras").icon(IconName::Camera));
+
+        for (c_idx, cam_name) in cameras.iter().enumerate() {
+            cam_popup = cam_popup.item(MacMenuItem::new(format!("cam-{c_idx}"), cam_name.clone()));
+        }
+
+        let cameras_clone = cameras.clone();
+        let cam_popup = cam_popup.on_change(cx.listener(move |this, idx: &usize, _, cx| {
+            let filter = if *idx == 0 || *idx > cameras_clone.len() {
+                None
+            } else {
+                Some(cameras_clone[*idx - 1].clone())
+            };
+            this.set_camera_filter(filter, cx);
+        }));
+
+        let is_filtered = self.media_filter != MediaFilter::All
+            || self.date_filter != DateFilter::AllDates
+            || self.camera_filter.is_some();
+
+        h_flex()
+            .id("search-filter-bar")
+            .w_full()
+            .h(px(38.0))
+            .flex_shrink_0()
+            .px(px(PAGE_INSET))
+            .border_b_1()
+            .border_color(border)
+            .bg(cx.theme().background)
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(seg_ctrl)
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(date_popup)
+                    .when(has_cameras, |bar| bar.child(cam_popup))
+                    .when(is_filtered, |bar| {
+                        bar.child(
+                            MacButton::new("reset-filters-btn")
+                                .small()
+                                .borderless()
+                                .icon(IconName::X)
+                                .label("Reset")
+                                .tooltip("Clear all active filters")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.reset_filters(cx);
+                                }))
+                        )
+                    })
             )
     }
 
@@ -2317,6 +2750,9 @@ impl PhotoApp {
                     .mt_1()
             }))
             .child(search_bar)
+            .when(!self.raw_hits.is_empty(), |page| {
+                page.child(self.filter_bar(cx))
+            })
             .child(list_content)
     }
 
@@ -2361,6 +2797,10 @@ impl PhotoApp {
             .on_action(cx.listener(Self::on_copy))
             .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_next_track))
+            .on_action(cx.listener(Self::on_prev_track))
+            .on_action(cx.listener(Self::on_next_track))
+            .on_action(cx.listener(Self::on_prev_track))
             .w_full()
             .h_full()
             .relative()
@@ -2700,18 +3140,92 @@ impl PhotoApp {
                     .gap_2()
                     .child(
                         div()
-                            .id("player-scrubber-track")
+                            .id("player-scrubber-hitbox")
                             .w_full()
-                            .h(px(6.0))
-                            .rounded_full()
-                            .bg(if cx.theme().mode.is_dark() { rgba(0xFFFFFF22) } else { rgba(0x00000018) })
-                            .relative()
+                            .py_1()
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, cx.listener({
+                                let hit_path_seek = hit.path.clone();
+                                move |this, event: &MouseDownEvent, window, cx| {
+                                    if dur <= 0.0 {
+                                        return;
+                                    }
+                                    if this.player.current_path() != Some(&hit_path_seek) {
+                                        this.player.load(&hit_path_seek);
+                                    }
+                                    this.is_scrubbing = true;
+                                    let win_w = f32::from(window.viewport_size().width);
+                                    let b = this.hits_scroll.bounds();
+                                    let (track_left, track_w) = if b.size.width > px(100.0) {
+                                        let side_left = f32::from(b.origin.x + b.size.width);
+                                        let side_w = (win_w - side_left).max(280.0);
+                                        (side_left + 28.0, side_w - 56.0)
+                                    } else {
+                                        (win_w - PREVIEW_WIDTH + 28.0, PREVIEW_WIDTH - 56.0)
+                                    };
+                                    let mouse_x = f32::from(event.position.x);
+                                    let frac = ((mouse_x - track_left) / track_w.max(1.0)).clamp(0.0, 1.0);
+                                    this.seek_media((frac as f64) * dur, cx);
+                                }
+                            }))
+                            .on_mouse_move(cx.listener({
+                                let hit_path_seek = hit.path.clone();
+                                move |this, event: &MouseMoveEvent, window, cx| {
+                                    if !this.is_scrubbing || dur <= 0.0 {
+                                        return;
+                                    }
+                                    if this.player.current_path() != Some(&hit_path_seek) {
+                                        this.player.load(&hit_path_seek);
+                                    }
+                                    let win_w = f32::from(window.viewport_size().width);
+                                    let b = this.hits_scroll.bounds();
+                                    let (track_left, track_w) = if b.size.width > px(100.0) {
+                                        let side_left = f32::from(b.origin.x + b.size.width);
+                                        let side_w = (win_w - side_left).max(280.0);
+                                        (side_left + 28.0, side_w - 56.0)
+                                    } else {
+                                        (win_w - PREVIEW_WIDTH + 28.0, PREVIEW_WIDTH - 56.0)
+                                    };
+                                    let mouse_x = f32::from(event.position.x);
+                                    let frac = ((mouse_x - track_left) / track_w.max(1.0)).clamp(0.0, 1.0);
+                                    this.seek_media((frac as f64) * dur, cx);
+                                }
+                            }))
+                            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| {
+                                this.is_scrubbing = false;
+                            }))
+                            .on_mouse_exit(cx.listener(|this, _, _, _| {
+                                this.is_scrubbing = false;
+                            }))
                             .child(
                                 div()
-                                    .h_full()
-                                    .w(gpui_kit::DefiniteLength::Fraction(fraction as f32))
+                                    .id("player-scrubber-track")
+                                    .w_full()
+                                    .h(px(6.0))
                                     .rounded_full()
-                                    .bg(cx.theme().primary)
+                                    .bg(if cx.theme().mode.is_dark() { rgba(0xFFFFFF22) } else { rgba(0x00000018) })
+                                    .relative()
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(gpui_kit::DefiniteLength::Fraction(fraction as f32))
+                                            .rounded_full()
+                                            .bg(cx.theme().primary)
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top(px(-3.0))
+                                            .left(gpui_kit::DefiniteLength::Fraction(fraction as f32))
+                                            .ml(px(-6.0))
+                                            .w(px(12.0))
+                                            .h(px(12.0))
+                                            .rounded_full()
+                                            .bg(rgb(0xFFFFFF))
+                                            .border_1()
+                                            .border_color(rgba(0x00000030))
+                                            .shadow_sm()
+                                    )
                             )
                     )
                     .child(
@@ -2730,6 +3244,16 @@ impl PhotoApp {
                             .items_center()
                             .justify_center()
                             .gap_2()
+                            .child(
+                                MacButton::new("player-prev-track")
+                                    .small()
+                                    .borderless()
+                                    .icon(IconName::SkipBack)
+                                    .tooltip("Previous Track (⌘← or K)")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_prev_track(&PrevTrack, window, cx);
+                                    }))
+                            )
                             .child({
                                 let hit_path_restart = hit_path_player.clone();
                                 MacButton::new("player-restart")
@@ -2784,6 +3308,16 @@ impl PhotoApp {
                                         this.seek_media(target_seek, cx);
                                     }))
                             })
+                            .child(
+                                MacButton::new("player-next-track")
+                                    .small()
+                                    .borderless()
+                                    .icon(IconName::SkipForward)
+                                    .tooltip("Next Track (⌘→ or J)")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_next_track(&NextTrack, window, cx);
+                                    }))
+                            )
                             .when(is_video, |bar| {
                                 let hit_path_open = hit_path_player.clone();
                                 bar.child(
@@ -2802,6 +3336,61 @@ impl PhotoApp {
                                         }))
                                 )
                             })
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .pt_1()
+                            .child(
+                                MacButton::new("player-mute-btn")
+                                    .small()
+                                    .borderless()
+                                    .icon(if self.player.is_muted() {
+                                        IconName::VolumeX
+                                    } else if self.player.volume() > 0.5 {
+                                        IconName::Volume2
+                                    } else if self.player.volume() > 0.0 {
+                                        IconName::Volume1
+                                    } else {
+                                        IconName::VolumeX
+                                    })
+                                    .tooltip(if self.player.is_muted() { "Unmute" } else { "Mute" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.player.toggle_mute();
+                                        cx.notify();
+                                    }))
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(
+                                        MacSlider::new("player-volume-slider")
+                                            .range(0.0, 1.0)
+                                            .value(if self.player.is_muted() { 0.0 } else { self.player.volume() })
+                                            .on_change(cx.listener(|this, val: &f32, _, cx| {
+                                                if this.player.is_muted() {
+                                                    this.player.set_muted(false);
+                                                }
+                                                this.player.set_volume(*val);
+                                                cx.notify();
+                                            }))
+                                    )
+                            )
+                            .child(
+                                div()
+                                    .mac_caption2()
+                                    .text_color(muted_fg)
+                                    .w(px(34.0))
+                                    .text_right()
+                                    .child(if self.player.is_muted() {
+                                        "Mute".to_string()
+                                    } else {
+                                        format!("{:.0}%", self.player.volume() * 100.0)
+                                    })
+                            )
                     )
             );
         }
@@ -4361,6 +4950,8 @@ impl Render for PhotoApp {
             .on_action(cx.listener(Self::on_copy))
             .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_next_track))
+            .on_action(cx.listener(Self::on_prev_track))
             .w(viewport.width)
             .h(viewport.height)
             .bg(if cx.theme().mode.is_dark() {
@@ -4563,6 +5154,14 @@ fn search_hint(
                             .gap_1()
                             .child(key_chip(&RefreshPreview, RESULTS, "space", window))
                             .child("play / pause"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(key_chip(&NextTrack, RESULTS, "secondary-right", window))
+                            .child("track"),
                     )
                 })
                 .child(
@@ -4856,5 +5455,81 @@ mod tests {
             .item(MacMenuItem::new("act-copy", "Copy File / Image").shortcut("⌘C"))
             .item(MacMenuItem::new("act-copy-path", "Copy Full Path").shortcut("⌥⌘C"));
         let _ = action_btn;
+    }
+
+    #[core::prelude::v1::test]
+    fn test_media_filter_matching() {
+        let make_hit = |path_str: &str, camera: Option<&str>| RankedHit {
+            similarity: 0.85,
+            path: PathBuf::from(path_str),
+            label: "test".to_string(),
+            camera_model: camera.map(str::to_string),
+            focal_length_mm: None,
+            aperture_f: None,
+            preview_path: PathBuf::new(),
+        };
+
+        let photo_hit = make_hit("/photos/beach.jpg", Some("Canon EOS R5"));
+        let video_hit = make_hit("/videos/sunset.mp4", None);
+        let audio_hit = make_hit("/music/song.mp3", None);
+        let doc_hit = make_hit("/docs/notes.pdf", None);
+
+        // MediaFilter::All matches everything
+        assert!(PhotoApp::hit_matches_media(&photo_hit, MediaFilter::All));
+        assert!(PhotoApp::hit_matches_media(&video_hit, MediaFilter::All));
+        assert!(PhotoApp::hit_matches_media(&audio_hit, MediaFilter::All));
+        assert!(PhotoApp::hit_matches_media(&doc_hit, MediaFilter::All));
+
+        // MediaFilter::Photos
+        assert!(PhotoApp::hit_matches_media(&photo_hit, MediaFilter::Photos));
+        assert!(!PhotoApp::hit_matches_media(&video_hit, MediaFilter::Photos));
+        assert!(!PhotoApp::hit_matches_media(&audio_hit, MediaFilter::Photos));
+        assert!(!PhotoApp::hit_matches_media(&doc_hit, MediaFilter::Photos));
+
+        // MediaFilter::Videos
+        assert!(!PhotoApp::hit_matches_media(&photo_hit, MediaFilter::Videos));
+        assert!(PhotoApp::hit_matches_media(&video_hit, MediaFilter::Videos));
+        assert!(!PhotoApp::hit_matches_media(&audio_hit, MediaFilter::Videos));
+        assert!(!PhotoApp::hit_matches_media(&doc_hit, MediaFilter::Videos));
+
+        // MediaFilter::Audio
+        assert!(!PhotoApp::hit_matches_media(&photo_hit, MediaFilter::Audio));
+        assert!(!PhotoApp::hit_matches_media(&video_hit, MediaFilter::Audio));
+        assert!(PhotoApp::hit_matches_media(&audio_hit, MediaFilter::Audio));
+        assert!(!PhotoApp::hit_matches_media(&doc_hit, MediaFilter::Audio));
+
+        // MediaFilter::Documents
+        assert!(!PhotoApp::hit_matches_media(&photo_hit, MediaFilter::Documents));
+        assert!(!PhotoApp::hit_matches_media(&video_hit, MediaFilter::Documents));
+        assert!(!PhotoApp::hit_matches_media(&audio_hit, MediaFilter::Documents));
+        assert!(PhotoApp::hit_matches_media(&doc_hit, MediaFilter::Documents));
+    }
+
+    #[core::prelude::v1::test]
+    fn test_filter_controls_and_volume_slider() {
+        let seg_ctrl = MacSegmentedControl::new("test-media-facet")
+            .segment(MacSegment::new("facet-all").label("All (10)"))
+            .segment(MacSegment::new("facet-photos").label("Photos (6)").icon(IconName::Image))
+            .segment(MacSegment::new("facet-videos").label("Videos (2)").icon(IconName::Video))
+            .segment(MacSegment::new("facet-audio").label("Audio (1)").icon(IconName::Music))
+            .segment(MacSegment::new("facet-docs").label("Docs (1)").icon(IconName::FileText))
+            .selected_index(1);
+        let _ = seg_ctrl;
+
+        let date_popup = MacPopupButton::new("test-date-popup")
+            .selected_index(0)
+            .item(MacMenuItem::new("df-all", "All Dates").icon(IconName::Calendar))
+            .item(MacMenuItem::new("df-24h", "Past 24 Hours"))
+            .item(MacMenuItem::new("df-7d", "Past 7 Days"))
+            .item(MacMenuItem::new("df-30d", "Past 30 Days"))
+            .item(MacMenuItem::new("df-this-yr", "This Year"))
+            .item(MacMenuItem::new("df-past-yr", "Past Year"))
+            .item(MacMenuItem::new("df-older", "Older than 1 Year"));
+        let _ = date_popup;
+
+        let slider = MacSlider::new("test-player-volume")
+            .range(0.0, 1.0)
+            .value(0.75);
+        let _ = slider;
     }
 }
