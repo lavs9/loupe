@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-26
+
+### Added
+- Media Facets / Filter Chips: Segmented control in the toolbar with dynamic counts and icons for All, Photos, Videos, Audio, and Documents.
+- Date Range Filter: Filter search results by Past 24 Hours, Past 7 Days, Past 30 Days, This Year, Past Year, or Older than 1 Year via native macOS PopUp button.
+- Camera Model Filter: Automatically detects camera models in query results and lets users filter by specific cameras.
+- Interactive Scrubber: Drag or click anywhere on the media scrubber track to smoothly seek with a native Apple-style thumb knob.
+- Dedicated Volume Controls: In-app player now includes volume slider, mute toggle button (`Volume2`, `Volume1`, `VolumeX`), and percentage readout.
+- Track Navigation: Previous / Next track shortcuts (`⌘→` / `⌘←`, `J` / `K`) and Skip Back / Skip Forward buttons on the player card.
+
+### Fixed
+- Fixed GitHub Actions CI checkout failure by linking `gpui-apple-hig` to public git repo.
+- Document MIME type recognition expanded to include `.pdf`, `.epub`, `.txt`, `.md`, `.rtf`, `.doc`, `.docx`.
+
 ## [0.3.0] - 2026-10-24
 
 ### Added

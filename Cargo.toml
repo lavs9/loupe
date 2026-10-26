@@ -1,6 +1,6 @@
 [package]
 name = "loupe"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Search photos, clips, and songs on this Mac and on disks you plug in. The index lives next to the files."
 
