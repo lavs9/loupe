@@ -34,6 +34,7 @@ thread_local! {
 
 /// Bytes pulled down while the LiteRT dylib or EmbeddingGemma weights are fetched.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct FetchLive {
     pub phase: String,
     pub got: u64,
@@ -44,6 +45,7 @@ pub struct FetchLive {
 
 /// True when this Mac still needs the LiteRT runtime or the 740M weights.
 /// A preset `LOUPE_GEMMA_URL` skips the fetch (window e2e).
+#[allow(dead_code)]
 pub fn needs_fetch() -> bool {
     if sources::env_var("LOUPE_GEMMA_URL", "PHOTO_ENGINE_GEMMA_URL").is_ok() {
         return false;
@@ -52,6 +54,7 @@ pub fn needs_fetch() -> bool {
 }
 
 /// Download the LiteRT dylib and the EmbeddingGemma 2 740M bundle.
+#[allow(dead_code)]
 pub fn prepare_runtime(live: Arc<Mutex<FetchLive>>) -> Result<()> {
     FETCH.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&live)));
     let result: Result<()> = (|| {
@@ -79,6 +82,7 @@ pub fn prepare_runtime(live: Arc<Mutex<FetchLive>>) -> Result<()> {
     result
 }
 
+#[allow(dead_code)]
 pub fn weights_on_disk() -> Option<PathBuf> {
     for dir in weight_dirs() {
         if let Some(path) = model_ready(&dir) {
@@ -88,6 +92,7 @@ pub fn weights_on_disk() -> Option<PathBuf> {
     None
 }
 
+#[allow(dead_code)]
 fn runtime_on_disk() -> bool {
     dylib_ready(&runtime_dir().join(LITERT_TAG)).is_some()
 }

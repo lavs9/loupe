@@ -48,6 +48,7 @@ pub fn env_os(name: &str, legacy: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(name).or_else(|| std::env::var_os(legacy))
 }
 
+#[allow(dead_code)]
 pub fn env_var(name: &str, legacy: &str) -> Result<String, std::env::VarError> {
     std::env::var(name).or_else(|_| std::env::var(legacy))
 }

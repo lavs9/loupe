@@ -5,6 +5,7 @@ mod db;
 mod documents;
 mod embedder;
 mod gemma;
+pub mod hardware;
 mod litert;
 #[cfg(feature = "gui")]
 mod gui;
@@ -95,6 +96,13 @@ enum Commands {
         #[arg(long)]
         self_check: bool,
     },
+    /// Hardware profile and intelligent embedding model recommendation for this Mac.
+    #[command(alias = "sysinfo")]
+    Hardware {
+        /// Output profile in JSON format for automated tooling.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -117,6 +125,15 @@ fn main() -> Result<()> {
             } else {
                 open_gui()
             }
+        }
+        Some(Commands::Hardware { json }) => {
+            let profile = hardware::HardwareProfile::detect();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&profile)?);
+            } else {
+                println!("{}", profile.cli_report());
+            }
+            Ok(())
         }
         Some(command) => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -287,6 +304,14 @@ async fn run_command(command: Commands) -> Result<()> {
         }
         Commands::Gui { .. } => {
             anyhow::bail!("the window is opened before the runtime starts");
+        }
+        Commands::Hardware { json } => {
+            let profile = hardware::HardwareProfile::detect();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&profile)?);
+            } else {
+                println!("{}", profile.cli_report());
+            }
         }
     }
 

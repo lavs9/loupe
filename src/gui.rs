@@ -328,6 +328,7 @@ struct PhotoApp {
     audio_tags_cache: std::sync::Mutex<HashMap<PathBuf, String>>,
     file_meta_cache: std::sync::Mutex<HashMap<PathBuf, (String, Option<String>)>>,
     file_mtime_cache: std::sync::Mutex<HashMap<PathBuf, Option<std::time::SystemTime>>>,
+    hardware: crate::hardware::HardwareProfile,
 }
 
 impl PhotoApp {
@@ -517,6 +518,7 @@ impl PhotoApp {
             audio_tags_cache: std::sync::Mutex::new(HashMap::new()),
             file_meta_cache: std::sync::Mutex::new(HashMap::new()),
             file_mtime_cache: std::sync::Mutex::new(HashMap::new()),
+            hardware: crate::hardware::HardwareProfile::detect(),
         };
         if due {
             app.spawn_update(cx);
@@ -4440,18 +4442,35 @@ impl PhotoApp {
                                 let (model_status_text, model_badge) = if self.fetching {
                                     (self.fetch_note.to_string(), MacBadge::new("download-badge", "Downloading").accent())
                                 } else if gemma::weights_on_disk().is_some() {
-                                    ("EmbeddingGemma 2 is ready on this Mac.".to_string(), MacBadge::new("installed-badge", "Installed").success())
+                                    ("Ready on this Mac · 256-d Matryoshka (~530 MB)".to_string(), MacBadge::new("installed-badge", "Installed").success())
                                 } else {
                                     ("Model (~530 MB) downloads on first launch.".to_string(), MacBadge::new("not-installed-badge", "Available").neutral())
                                 };
 
+                                let hw = &self.hardware;
+                                let hw_memory_text = format!("{:.1} GB Unified Memory · {} CPU Cores", hw.total_memory_gb, hw.cpu_cores);
+
                                 let mut model_group = MacSettingsGroup::new("engine-group")
-                                    .title("Model")
-                                    .footer("EmbeddingGemma 2 runs locally and privately on your Mac via Metal.")
+                                    .title("System & AI Model Profile")
+                                    .footer("Loupe detects your unified memory and configures the optimal embedding engine locally via Metal. External disks use the universal portable default so catalogs open on any Mac.")
                                     .row(
-                                        MacSettingsRow::new("engine-row", "EmbeddingGemma 2")
-                                            .subtitle(model_status_text)
+                                        MacSettingsRow::new("hardware-row", hw.cpu_brand.clone())
+                                            .subtitle(hw_memory_text)
                                             .icon(IconName::Cpu)
+                                            .icon_color(cx.theme().primary)
+                                            .control(MacBadge::new("hw-tier-badge", hw.tier.badge_label()).accent()),
+                                    )
+                                    .row(
+                                        MacSettingsRow::new("recommendation-row", hw.recommended_model_name())
+                                            .subtitle(hw.recommendation_reason())
+                                            .icon(IconName::Sparkles)
+                                            .icon_color(cx.theme().primary)
+                                            .control(MacBadge::new("rec-badge", "Optimal").success()),
+                                    )
+                                    .row(
+                                        MacSettingsRow::new("engine-row", "Active Embedder")
+                                            .subtitle(model_status_text)
+                                            .icon(IconName::HardDrive)
                                             .icon_color(cx.theme().primary)
                                             .control(model_badge),
                                     );
@@ -4471,6 +4490,16 @@ impl PhotoApp {
                                             ),
                                     );
                                 }
+
+                                model_group = model_group.child(
+                                    div()
+                                        .px(px(16.0))
+                                        .py(px(8.0))
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(format!("Hardware Headroom: {}", hw.high_perf_options_reason())),
+                                );
+
                                 model_group
                             })
                             .child(
@@ -5531,5 +5560,26 @@ mod tests {
             .range(0.0, 1.0)
             .value(0.75);
         let _ = slider;
+    }
+
+    #[core::prelude::v1::test]
+    fn test_hardware_settings_profile_construction() {
+        let hw = crate::hardware::HardwareProfile::detect();
+        assert!(hw.total_memory_gb > 0.0);
+        let group = MacSettingsGroup::new("engine-group")
+            .title("System & AI Model Profile")
+            .row(
+                MacSettingsRow::new("hardware-row", hw.cpu_brand.clone())
+                    .subtitle(format!("{:.1} GB Unified Memory", hw.total_memory_gb))
+                    .icon(IconName::Cpu)
+                    .control(MacBadge::new("hw-tier-badge", hw.tier.badge_label()).accent()),
+            )
+            .row(
+                MacSettingsRow::new("recommendation-row", hw.recommended_model_name())
+                    .subtitle(hw.recommendation_reason())
+                    .icon(IconName::Sparkles)
+                    .control(MacBadge::new("rec-badge", "Optimal").success()),
+            );
+        let _ = group;
     }
 }

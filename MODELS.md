@@ -38,9 +38,9 @@ These are the next candidates. None of them are wired in the app yet. Each would
 
 Chat models (Gemma 4, Qwen3, Llama) are the wrong tool. They generate words. Loupe needs a vector for every photo.
 
-## Rule we will keep
+## Rules we keep
 
-1. Detect unified memory (`hw.memsize`) and recommend, not auto-switch, unless the user picks a model in Settings.
+1. Detect unified memory (`hw.memsize`, via `loupe hardware` and the Settings GUI) and recommend, not auto-switch, unless the user picks a model in Settings.
 2. The **portable** choice is always EmbeddingGemma 2 740M LiteRT, so an HDD indexed on a 16 GB machine opens on a 32 GB machine.
 3. A “Quality” model on 32 GB is opt-in per folder. That folder’s `.photo_index` stays on that model until they re-index.
 
