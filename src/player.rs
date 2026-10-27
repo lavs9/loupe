@@ -477,6 +477,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "gui", target_os = "macos"))]
     fn test_media_player_playback_mp4() {
         let mp4_path = PathBuf::from("/tmp/test_video.mp4");
         if !mp4_path.exists() {
