@@ -331,6 +331,35 @@ impl CatalogDb {
         Ok(found.is_some())
     }
 
+    pub fn get_embedding_by_hash(&self, blake3_hash: &str) -> Result<Option<[f32; EMBED_DIM]>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT embedding FROM vec_media WHERE blake3_hash = ?1 LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![blake3_hash])?;
+        if let Some(row) = rows.next()? {
+            let blob: Vec<u8> = row.get(0)?;
+            Ok(parse_embedding(&blob))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_embedding_by_rel_path(&self, rel_path: &str) -> Result<Option<[f32; EMBED_DIM]>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT v.embedding
+             FROM file_paths fp
+             JOIN vec_media v ON v.blake3_hash = fp.blake3_hash
+             WHERE fp.rel_path = ?1 LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![rel_path])?;
+        if let Some(row) = rows.next()? {
+            let blob: Vec<u8> = row.get(0)?;
+            Ok(parse_embedding(&blob))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn bind_path_to_hash(&self, blake3_hash: &str, rel_path: &str, mtime: i64, size: u64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO file_paths (blake3_hash, rel_path, file_mtime, file_size)
@@ -642,5 +671,63 @@ fn merge_keywords(hits: &mut Vec<SearchHit>, words: Vec<SearchHit>) {
         } else {
             hits.push(word);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_embedding_and_distance() {
+        let mut emb = [0.0f32; EMBED_DIM];
+        emb[0] = 1.0;
+        let bytes = emb.as_bytes();
+        let parsed = parse_embedding(bytes).expect("parse embedding");
+        assert_eq!(parsed[0], 1.0);
+        assert_eq!(parsed[1], 0.0);
+
+        let dist = cosine_distance(&emb, &parsed);
+        assert!(dist.abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_get_embedding_by_path_and_hash() -> Result<()> {
+        let temp_dir = std::env::temp_dir().join(format!("loupe_db_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir)?;
+        let db_path = temp_dir.join("catalog.db");
+
+        let mut db = CatalogDb::open(&db_path)?;
+        let mut sample_emb = [0.0f32; EMBED_DIM];
+        sample_emb[0] = 0.5;
+        sample_emb[1] = 0.5;
+
+        let exif = ExifRecord::default();
+        db.insert_full_asset(
+            "dummy_hash_123",
+            "photos/sunset.jpg",
+            1700000000,
+            12345,
+            "image/jpeg",
+            "v1",
+            &exif,
+            &sample_emb,
+            "sunset beach",
+        )?;
+
+        let by_hash = db.get_embedding_by_hash("dummy_hash_123")?;
+        assert!(by_hash.is_some());
+        assert_eq!(by_hash.unwrap()[0], 0.5);
+
+        let by_path = db.get_embedding_by_rel_path("photos/sunset.jpg")?;
+        assert!(by_path.is_some());
+        assert_eq!(by_path.unwrap()[0], 0.5);
+
+        let missing = db.get_embedding_by_rel_path("photos/nonexistent.jpg")?;
+        assert!(missing.is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
     }
 }

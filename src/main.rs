@@ -103,6 +103,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Find photos and media visually and semantically similar to a photo or audio file.
+    #[command(alias = "like")]
+    Similar {
+        /// Path to a photo or media file.
+        #[arg(required = true)]
+        path: PathBuf,
+        /// Extra folder or disk to include this once. It must already contain an index.
+        #[arg(short, long)]
+        source: Vec<PathBuf>,
+        #[arg(short, long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -311,6 +323,42 @@ async fn run_command(command: Commands) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&profile)?);
             } else {
                 println!("{}", profile.cli_report());
+            }
+        }
+        Commands::Similar {
+            path,
+            source,
+            limit,
+        } => {
+            let resolved_path = std::fs::canonicalize(&path).unwrap_or(path.clone());
+            let set = sources::collect(&source)?;
+            if set.catalogs.is_empty() {
+                println!("no indexes yet");
+                return Ok(());
+            }
+            let query_vec = if let Some(v) = lookup::find_embedding_for_path(&set, &resolved_path) {
+                v
+            } else {
+                match documents::embed_file(&resolved_path, embedder.as_ref())? {
+                    Some(v) => v,
+                    None => anyhow::bail!("could not decode or embed {}", resolved_path.display()),
+                }
+            };
+            let (hits, errors) = lookup::search_by_vector(&set, &query_vec, limit, Some(&resolved_path))?;
+            println!("\nFound {} similar matches for {}:", hits.len(), resolved_path.display());
+            for (i, h) in hits.iter().enumerate() {
+                println!(
+                    "  {:02}. [sim: {:.3}] {} (Camera: {:?}, Focal: {:?}mm, f/{:?})",
+                    i + 1,
+                    h.similarity,
+                    h.path.display(),
+                    h.camera_model.as_deref().unwrap_or("-"),
+                    h.focal_length_mm.unwrap_or(0.0),
+                    h.aperture_f.unwrap_or(0.0)
+                );
+            }
+            for err in errors {
+                eprintln!("  warning: {err}");
             }
         }
     }

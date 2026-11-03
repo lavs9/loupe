@@ -51,6 +51,94 @@ pub fn search_catalogs(
     Ok((parsed, ranked, errors))
 }
 
+/// Look for an existing embedding for `path` across open catalogs in `set`.
+pub fn find_embedding_for_path(
+    set: &SearchSet,
+    path: &std::path::Path,
+) -> Option<[f32; crate::db::EMBED_DIM]> {
+    let canonical = path.canonicalize().ok();
+    for catalog in &set.catalogs {
+        let cat_root = catalog.drive_root.canonicalize().unwrap_or_else(|_| catalog.drive_root.clone());
+        let rel_opt = if let Some(ref can) = canonical {
+            can.strip_prefix(&cat_root).ok()
+        } else {
+            path.strip_prefix(&catalog.drive_root).ok()
+        };
+
+        if let Some(rel) = rel_opt {
+            let rel_str = rel.to_string_lossy();
+            if let Ok(db) = CatalogDb::open_readonly(&catalog.db_path) {
+                if let Ok(Some(vec)) = db.get_embedding_by_rel_path(&rel_str) {
+                    return Some(vec);
+                }
+            }
+        }
+    }
+
+    // Fallback: check by blake3 hash if the file is on disk
+    if path.exists() {
+        if let Ok(bytes) = std::fs::read(path) {
+            let hash = blake3::hash(&bytes).to_hex().to_string();
+            for catalog in &set.catalogs {
+                if let Ok(db) = CatalogDb::open_readonly(&catalog.db_path) {
+                    if let Ok(Some(vec)) = db.get_embedding_by_hash(&hash) {
+                        return Some(vec);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Search every catalog in `set` for items visually and semantically similar to `query_vec`.
+/// If `exclude_path` is specified, that exact file is omitted from the results.
+pub fn search_by_vector(
+    set: &SearchSet,
+    query_vec: &[f32; crate::db::EMBED_DIM],
+    limit: usize,
+    exclude_path: Option<&std::path::Path>,
+) -> Result<(Vec<RankedHit>, Vec<String>)> {
+    if set.catalogs.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let parsed = ParsedQuery::parse("");
+    let mut ranked = Vec::new();
+    let mut errors = Vec::new();
+    let exclude_canonical = exclude_path.and_then(|p| p.canonicalize().ok());
+
+    for catalog in &set.catalogs {
+        // Query slightly more than limit so excluding the target doesn't truncate early
+        match search_one(catalog, query_vec, &parsed, limit + 2) {
+            Ok(hits) => {
+                for hit in hits {
+                    if let Some(exclude) = exclude_path {
+                        if hit.path == exclude {
+                            continue;
+                        }
+                        if let Some(ref ex_can) = exclude_canonical {
+                            if hit.path.canonicalize().ok().as_ref() == Some(ex_can) {
+                                continue;
+                            }
+                        }
+                    }
+                    ranked.push(hit);
+                }
+            }
+            Err(err) => errors.push(catalog_search_error(&catalog.label, &err)),
+        }
+    }
+
+    ranked.sort_by(|left, right| {
+        right
+            .similarity
+            .partial_cmp(&left.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    ranked.truncate(limit);
+    Ok((ranked, errors))
+}
+
 fn search_one(
     catalog: &Catalog,
     query_vec: &[f32; crate::db::EMBED_DIM],

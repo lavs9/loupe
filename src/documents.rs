@@ -156,6 +156,24 @@ pub fn prepare(
     Ok(None)
 }
 
+/// Embed any supported media file (image, video, audio, or document).
+pub fn embed_file(
+    path: &Path,
+    embedder: &dyn MultimodalEmbedder,
+) -> Result<Option<[f32; crate::db::EMBED_DIM]>> {
+    if let Some(mime) = mime_for_path(path) {
+        if is_still(mime) {
+            embedder.embed_image(path)
+        } else if let Some(prep) = prepare(path, mime, embedder)? {
+            Ok(Some(prep.embedding))
+        } else {
+            embedder.embed_image(path)
+        }
+    } else {
+        embedder.embed_image(path)
+    }
+}
+
 pub fn quicklook_image(path: &Path) -> Option<Vec<u8>> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::db::CatalogDb;
 use crate::embedder::MultimodalEmbedder;
 use crate::indexer::{run_incremental_index, IndexReport, ScanTick};
-use crate::lookup::{search_catalogs, RankedHit};
+use crate::lookup::{find_embedding_for_path, search_by_vector, search_catalogs, RankedHit};
 use crate::sources::{self, DiskMedium, SourceNote};
 use tracing::info;
 
@@ -812,6 +812,54 @@ pub fn search_photos(embedder: &dyn MultimodalEmbedder, query: &str, limit: usiz
         });
     }
     let (_parsed, hits, errors) = search_catalogs(&set, embedder, query, limit)?;
+    let names = set
+        .catalogs
+        .iter()
+        .map(|catalog| catalog.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let index_line = format!(
+        "{} {}: {names}",
+        set.catalogs.len(),
+        if set.catalogs.len() == 1 { "index" } else { "indexes" }
+    );
+    Ok(SearchOutcome {
+        hits,
+        index_line,
+        notes: notice_lines(&set.notes),
+        errors,
+    })
+}
+
+pub fn search_similar_to_path(
+    embedder: &dyn MultimodalEmbedder,
+    target_path: &Path,
+    limit: usize,
+) -> Result<SearchOutcome> {
+    let set = sources::collect(&[])?;
+    if set.catalogs.is_empty() {
+        let notes = notice_lines(&set.notes);
+        let index_line = "No indexes to search.".into();
+        return Ok(SearchOutcome {
+            hits: Vec::new(),
+            index_line,
+            notes,
+            errors: Vec::new(),
+        });
+    }
+
+    let query_vec = if let Some(v) = find_embedding_for_path(&set, target_path) {
+        v
+    } else {
+        match crate::documents::embed_file(target_path, embedder)? {
+            Some(v) => v,
+            None => {
+                anyhow::bail!("Could not decode or embed media from {}", target_path.display());
+            }
+        }
+    };
+
+    let (hits, errors) = search_by_vector(&set, &query_vec, limit, Some(target_path))?;
     let names = set
         .catalogs
         .iter()
