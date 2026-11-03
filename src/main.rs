@@ -15,6 +15,7 @@ pub mod player;
 mod indexer;
 mod lookup;
 mod parser;
+pub mod photokit;
 mod preview;
 mod sources;
 mod vfs;
@@ -115,6 +116,19 @@ enum Commands {
         #[arg(short, long, default_value_t = 20)]
         limit: usize,
     },
+    /// Manage and index macOS Photos library via PhotoKit.
+    Photos {
+        #[command(subcommand)]
+        action: Option<PhotosAction>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PhotosAction {
+    /// Show PhotoKit authorization and catalog status.
+    Status,
+    /// Request PhotoKit access and incrementally index Apple Photos.
+    Index,
 }
 
 #[derive(Subcommand)]
@@ -192,6 +206,20 @@ async fn run_command(command: Commands) -> Result<()> {
         }
 
         Commands::Index { drive_root } => {
+            if drive_root.to_string_lossy().eq_ignore_ascii_case("photos") {
+                let live = Arc::new(std::sync::Mutex::new(app_model::IndexLive::default()));
+                let outcome = app_model::index_photos_live(embedder.as_ref(), &live)?;
+                let report = &outcome.report;
+                println!(
+                    "indexed Apple Photos\n  unchanged {}\n  moved {}\n  embedded {}\n  removed {}\n  skipped {}",
+                    report.unchanged,
+                    report.moved,
+                    report.embedded,
+                    report.removed,
+                    report.skipped
+                );
+                return Ok(());
+            }
             let outcome = app_model::index_folder(&drive_root, embedder.as_ref())?;
             let report = &outcome.report;
             println!(
@@ -359,6 +387,41 @@ async fn run_command(command: Commands) -> Result<()> {
             }
             for err in errors {
                 eprintln!("  warning: {err}");
+            }
+        }
+        Commands::Photos { action } => {
+            let action = action.unwrap_or(PhotosAction::Status);
+            match action {
+                PhotosAction::Status => {
+                    let auth = crate::photokit::authorization_status();
+                    println!("PhotoKit authorization: {:?}", auth);
+                    println!("Status:                 {}", auth.description());
+                    let cat = crate::photokit::photos_catalog_dir();
+                    println!("Catalog location:       {}", cat.display());
+                    if let Some(c) = sources::find_catalog(&cat) {
+                        if let Ok(db) = CatalogDb::open_readonly(&c.db_path) {
+                            if let Ok(stats) = db.stats() {
+                                println!("Indexed photos:         {}", stats.assets);
+                                println!("Model:                  {}", stats.model.as_deref().unwrap_or("-"));
+                            }
+                        }
+                    } else {
+                        println!("Indexed photos:         No index yet");
+                    }
+                }
+                PhotosAction::Index => {
+                    let live = Arc::new(std::sync::Mutex::new(app_model::IndexLive::default()));
+                    let outcome = app_model::index_photos_live(embedder.as_ref(), &live)?;
+                    let report = &outcome.report;
+                    println!(
+                        "indexed Apple Photos\n  unchanged {}\n  moved {}\n  embedded {}\n  removed {}\n  skipped {}",
+                        report.unchanged,
+                        report.moved,
+                        report.embedded,
+                        report.removed,
+                        report.skipped
+                    );
+                }
             }
         }
     }

@@ -610,6 +610,8 @@ pub fn folder_rows() -> Result<Vec<FolderRow>> {
             push_row(&mut rows, &mut seen, pictures, false, &media)?;
         }
     }
+    let photos_dir = crate::photokit::photos_catalog_dir();
+    push_row(&mut rows, &mut seen, photos_dir, false, &media)?;
     rows.sort_by(|left, right| {
         row_rank(left)
             .cmp(&row_rank(right))
@@ -649,9 +651,30 @@ fn push_row(
 }
 
 fn describe_row(path: PathBuf, remembered: bool, medium: DiskMedium) -> Result<FolderRow> {
-    let kind = disk_kind(&path);
-    let label = sources::label_for(&path);
-    let index = if !sources::path_on_live_volume(&path) || !path.exists() {
+    let is_photos = crate::photokit::is_photos_catalog(&path);
+    let kind = if is_photos {
+        DiskKind::ThisMac
+    } else {
+        disk_kind(&path)
+    };
+    let label = if is_photos {
+        "This Mac · Apple Photos".to_string()
+    } else {
+        sources::label_for(&path)
+    };
+    let index = if is_photos {
+        if let Some(catalog) = sources::find_catalog(&path) {
+            match CatalogDb::open_readonly(&catalog.db_path).and_then(|db| db.stats()) {
+                Ok(stats) => IndexState::Ready {
+                    photos: stats.assets,
+                    model: stats.model,
+                },
+                Err(err) => IndexState::Unreadable(err.to_string()),
+            }
+        } else {
+            IndexState::NoIndex
+        }
+    } else if !sources::path_on_live_volume(&path) || !path.exists() {
         IndexState::NotConnected
     } else if let Some(catalog) = sources::find_catalog(&path) {
         match CatalogDb::open_readonly(&catalog.db_path).and_then(|db| db.stats()) {
@@ -707,6 +730,27 @@ pub struct IndexLive {
 pub fn index_folder(root: &Path, embedder: &dyn MultimodalEmbedder) -> Result<IndexOutcome> {
     let live = Arc::new(Mutex::new(IndexLive::default()));
     index_folder_live(root, embedder, &live)
+}
+
+pub fn index_photos_live(
+    embedder: &dyn MultimodalEmbedder,
+    live: &Arc<Mutex<IndexLive>>,
+) -> Result<IndexOutcome> {
+    let root = crate::photokit::photos_catalog_dir();
+    std::fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(&root).unwrap_or(root);
+    let db_path = root.join(".photo_index/db/catalog.db");
+    let mut db = CatalogDb::open(&db_path)?;
+    let report = crate::indexer::run_incremental_photos_index(&mut db, embedder, &mut |tick: ScanTick| {
+        record_index_tick(live, tick);
+    })?;
+    db.wal_checkpoint();
+    crate::gemma::retire_llama_runtime();
+    Ok(IndexOutcome {
+        root,
+        report,
+        remember_error: None,
+    })
 }
 
 pub fn index_folder_live(
@@ -958,10 +1002,20 @@ fn write_preview_edge(photo: &Path, destination: &Path, edge: u32) -> Result<()>
 }
 
 pub fn open_path(path: &Path) -> Result<()> {
+    if crate::photokit::is_photos_catalog_image(path) {
+        if let Some(id) = crate::photokit::local_id_from_image_path(path) {
+            return crate::photokit::reveal_in_photos(&id);
+        }
+    }
     reveal_or_open(path, false)
 }
 
 pub fn reveal_path(path: &Path) -> Result<()> {
+    if crate::photokit::is_photos_catalog_image(path) {
+        if let Some(id) = crate::photokit::local_id_from_image_path(path) {
+            return crate::photokit::reveal_in_photos(&id);
+        }
+    }
     reveal_or_open(path, true)
 }
 
@@ -1220,5 +1274,29 @@ mod tests {
             }
             assert_eq!(settings.theme, expected);
         }
+    }
+
+    #[test]
+    fn test_photos_row_present_and_distinct() {
+        let rows = folder_rows().expect("folder_rows should succeed");
+        let photos_dir = crate::photokit::photos_catalog_dir();
+        let photos_row = rows.iter().find(|r| r.path == photos_dir);
+        assert!(photos_row.is_some(), "Apple Photos row should be present");
+        let row = photos_row.unwrap();
+        assert_eq!(row.label, "This Mac · Apple Photos");
+        assert_eq!(row.kind, DiskKind::ThisMac);
+
+        if let Some(pics) = pictures_dir() {
+            assert_ne!(row.path, pics, "Apple Photos row must be distinct from ~/Pictures");
+        }
+    }
+
+    #[test]
+    fn test_photos_catalog_image_recognition() {
+        let cat_img = crate::photokit::photos_catalog_dir().join("images/9F9247E6_L0_001.jpg");
+        assert!(crate::photokit::is_photos_catalog_image(&cat_img));
+
+        let local_pics = PathBuf::from("/Users/test/Pictures/photo.jpg");
+        assert!(!crate::photokit::is_photos_catalog_image(&local_pics));
     }
 }

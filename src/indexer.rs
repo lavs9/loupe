@@ -250,6 +250,102 @@ pub fn run_incremental_index(
     Ok(report)
 }
 
+pub fn run_incremental_photos_index(
+    db: &mut CatalogDb,
+    embedder: &dyn MultimodalEmbedder,
+    tick: &mut dyn FnMut(ScanTick),
+) -> Result<IndexReport> {
+    let drive_root = crate::photokit::photos_catalog_dir();
+    write_config(&drive_root)?;
+    let images_dir = drive_root.join("images");
+    std::fs::create_dir_all(&images_dir)?;
+
+    let status = crate::photokit::authorization_status();
+    if !status.is_authorized() {
+        let new_status = crate::photokit::request_authorization();
+        if !new_status.is_authorized() {
+            anyhow::bail!("Photos library access not authorized: {}", new_status.description());
+        }
+    }
+
+    let assets = crate::photokit::fetch_all_assets()?;
+    let reembed = db.model_mismatch(embedder.model_version())?;
+    let mut report = IndexReport::default();
+    let mut seen = HashSet::new();
+
+    for asset in assets {
+        let rel_path = crate::photokit::safe_asset_rel_path(&asset.id);
+        let rel_str = rel_path.to_string_lossy().to_string();
+        seen.insert(rel_str.clone());
+
+        let target_file = drive_root.join(&rel_path);
+        let mtime = asset.modified_at.or(asset.created_at).unwrap_or(0);
+
+        if target_file.is_file() {
+            if let Ok(meta) = std::fs::metadata(&target_file) {
+                let size = meta.len();
+                if !reembed && db.is_path_unchanged(&rel_str, mtime, size).unwrap_or(false) {
+                    report.unchanged += 1;
+                    emit(tick, &report, &rel_str);
+                    continue;
+                }
+            }
+        }
+
+        // Fetch image JPEG from PhotoKit (current edited version, max dimension 768)
+        let Some(jpeg_bytes) = crate::photokit::get_asset_image_jpeg(&asset.id, 768)? else {
+            report.skipped += 1;
+            emit(tick, &report, &rel_str);
+            continue;
+        };
+
+        if let Err(err) = std::fs::write(&target_file, &jpeg_bytes) {
+            warn!("failed to write {rel_str}: {err}");
+            report.skipped += 1;
+            emit(tick, &report, &rel_str);
+            continue;
+        }
+
+        let size = jpeg_bytes.len() as u64;
+        let blake3_hash = blake3::hash(&jpeg_bytes).to_hex().to_string();
+
+        let decoded = decode_image(&target_file);
+        let embedding = match embedder.embed_image(&target_file) {
+            Ok(Some(emb)) => emb,
+            _ => {
+                report.skipped += 1;
+                emit(tick, &report, &rel_str);
+                continue;
+            }
+        };
+
+        if let Some(ref image) = decoded {
+            save_preview(&drive_root, &blake3_hash, image);
+        }
+
+        let mut exif = ExifRecord::default();
+        exif.captured_at = asset.created_at;
+
+        db.insert_full_asset(
+            &blake3_hash,
+            &rel_str,
+            mtime,
+            size,
+            "image/jpeg",
+            embedder.model_version(),
+            &exif,
+            &embedding,
+            "",
+        )?;
+
+        report.embedded += 1;
+        emit(tick, &report, &rel_str);
+    }
+
+    report.removed = db.prune_missing("images", &seen)?;
+    Ok(report)
+}
+
 fn hash_file(path: &Path) -> std::io::Result<String> {
     let mut hasher = blake3::Hasher::new();
     if hasher.update_mmap_rayon(path).is_ok() {

@@ -106,6 +106,9 @@ fn catalog_file(drive_root: &Path) -> PathBuf {
 }
 
 pub fn label_for(drive_root: &Path) -> String {
+    if crate::photokit::is_photos_catalog(drive_root) {
+        return "This Mac · Apple Photos".to_string();
+    }
     let volumes = volumes_root();
     if let Ok(rel) = drive_root.strip_prefix(&volumes) {
         if let Some(name) = rel.components().next() {
@@ -482,6 +485,11 @@ pub fn collect(extra: &[PathBuf]) -> Result<SearchSet> {
         if let Some(catalog) = catalog_at(&dir) {
             push(catalog, &mut catalogs, &mut seen);
         }
+    }
+
+    let photos_dir = crate::photokit::photos_catalog_dir();
+    if let Some(catalog) = catalog_at(&photos_dir) {
+        push(catalog, &mut catalogs, &mut seen);
     }
 
     for catalog in connected_external_catalogs() {
