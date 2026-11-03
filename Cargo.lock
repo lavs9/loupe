@@ -3865,6 +3865,7 @@ dependencies = [
  "async-trait",
  "base64",
  "blake3",
+ "cc",
  "chrono",
  "clap",
  "global-hotkey",

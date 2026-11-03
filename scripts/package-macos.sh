@@ -60,6 +60,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>NSPhotoLibraryUsageDescription</key><string>Loupe needs access to your Photos library to index and search your photos locally on your Mac.</string>
     <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Mayank Lavania</string>
 </dict>
 </plist>

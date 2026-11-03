@@ -42,7 +42,7 @@ use gpui_kit::*;
 
 use crate::app_model::{
     self, check_update, copy_file, display_chord, display_thumb, folder_rows, format_chord,
-    index_failure, index_folder_live, index_summary, is_theme_dark, open_path, open_url,
+    index_failure, index_folder_live, index_photos_live, index_summary, is_theme_dark, open_path, open_url,
     parse_chord, release_url, reveal_path, save_settings, search_photos, system_is_dark,
     update_is_due, write_preview, Chord, ChordKey, DiskKind, FolderRow, GuiSettings, IndexLive,
     IndexState, UpdateReport, APP_VERSION, THEME_DARK, THEME_DARKROOM, THEME_LIGHT, THEME_PAPER,
@@ -998,13 +998,16 @@ impl PhotoApp {
             cx.notify();
             return;
         };
+        let is_photos = crate::photokit::is_photos_catalog_image(&path);
         let result = if reveal {
             reveal_path(&path)
         } else {
             open_path(&path)
         };
         self.status = match result {
+            Ok(()) if reveal && is_photos => "Showing in Photos.".into(),
             Ok(()) if reveal => "Showing it in Finder.".into(),
+            Ok(()) if is_photos => "Opened in Photos.".into(),
             Ok(()) => format!("Opened {}", path.display()).into(),
             Err(err) => err.to_string().into(),
         };
@@ -1130,16 +1133,24 @@ impl PhotoApp {
             cx.notify();
             return;
         }
-        let folder = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("folder")
-            .to_string();
+        let is_photos = crate::photokit::is_photos_catalog(&path);
+        let folder = if is_photos {
+            "Apple Photos".to_string()
+        } else {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("folder")
+                .to_string()
+        };
         self.busy = true;
         self.indexing_path = Some(path.clone());
         self.index_live = IndexLive::default();
         self.index_problem = None;
-        self.index_note = format!("Indexing {folder}. Looking through the folder.").into();
+        self.index_note = if is_photos {
+            "Accessing Apple Photos library via PhotoKit.".into()
+        } else {
+            format!("Indexing {folder}. Looking through the folder.").into()
+        };
         let live = Arc::new(Mutex::new(IndexLive::default()));
         let watch = Arc::clone(&live);
         let embedder = Arc::clone(&self.embedder);
@@ -1173,7 +1184,13 @@ impl PhotoApp {
         let failed_path = path.clone();
         self.index_task = Some(cx.spawn(async move |this, cx| {
             let outcome = cx
-                .background_spawn(async move { index_folder_live(&path, embedder.as_ref(), &live) })
+                .background_spawn(async move {
+                    if is_photos {
+                        index_photos_live(embedder.as_ref(), &live)
+                    } else {
+                        index_folder_live(&path, embedder.as_ref(), &live)
+                    }
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.busy = false;
@@ -2157,9 +2174,10 @@ impl PhotoApp {
                         );
                     }
 
+                    let is_photos_hit = crate::photokit::is_photos_catalog_image(&hit.path);
                     action_btn = action_btn
                         .item(
-                            MacMenuItem::new("action-open", "Open in Default App")
+                            MacMenuItem::new("action-open", if is_photos_hit { "Open in Photos" } else { "Open in Default App" })
                                 .icon(IconName::ExternalLink)
                                 .shortcut("↵")
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -2167,7 +2185,7 @@ impl PhotoApp {
                                 })),
                         )
                         .item(
-                            MacMenuItem::new("action-reveal", "Reveal in Finder")
+                            MacMenuItem::new("action-reveal", if is_photos_hit { "Reveal in Photos" } else { "Reveal in Finder" })
                                 .icon(IconName::Folder)
                                 .shortcut("⌘↵")
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -3568,19 +3586,22 @@ impl PhotoApp {
                                 cx.notify();
                             })),
                     )
-                    .child(
+                    .child({
+                        let is_photos = crate::photokit::is_photos_catalog_image(&hit.path);
                         MacButton::new("side-reveal")
                             .small()
                             .icon(IconName::Folder)
-                            .label("Finder")
+                            .label(if is_photos { "Photos" } else { "Finder" })
+                            .tooltip(if is_photos { "Show in Photos app (⌘↵)" } else { "Reveal in Finder (⌘↵)" })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.status = match reveal_path(&hit_reveal) {
+                                    Ok(()) if is_photos => "Showing in Photos.".into(),
                                     Ok(()) => "Showing it in Finder.".into(),
                                     Err(err) => err.to_string().into(),
                                 };
                                 cx.notify();
-                            })),
-                    )
+                            }))
+                    })
                     .child(
                         MacButton::new("side-copy")
                             .small()
@@ -3626,13 +3647,15 @@ impl PhotoApp {
                             );
                         }
 
+                        let is_photos_act = crate::photokit::is_photos_catalog_image(&hit.path);
                         side_actions
                             .item(
-                                MacMenuItem::new("side-act-open", "Open in Default App")
+                                MacMenuItem::new("side-act-open", if is_photos_act { "Open in Photos" } else { "Open in Default App" })
                                     .icon(IconName::ExternalLink)
                                     .shortcut("↵")
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         this.status = match open_path(&hit_path_action) {
+                                             Ok(()) if is_photos_act => "Opened in Photos.".into(),
                                              Ok(()) => format!("Opened {}", hit_path_action.display()).into(),
                                              Err(err) => err.to_string().into(),
                                         };
@@ -3640,11 +3663,12 @@ impl PhotoApp {
                                     })),
                             )
                             .item(
-                                MacMenuItem::new("side-act-reveal", "Reveal in Finder")
+                                MacMenuItem::new("side-act-reveal", if is_photos_act { "Reveal in Photos" } else { "Reveal in Finder" })
                                     .icon(IconName::Folder)
                                     .shortcut("⌘↵")
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         this.status = match reveal_path(&hit_reveal_action) {
+                                            Ok(()) if is_photos_act => "Showing in Photos.".into(),
                                             Ok(()) => "Showing it in Finder.".into(),
                                             Err(err) => err.to_string().into(),
                                         };
@@ -4023,18 +4047,19 @@ impl PhotoApp {
                                 cx.notify();
                             })),
                     )
-                    .child(
+                    .child({
+                        let is_photos = crate::photokit::is_photos_catalog_image(&path_reveal);
                         MacButton::new(SharedString::from(format!("reveal-row-{index}")))
                             .small()
                             .borderless()
                             .icon(IconName::Folder)
-                            .tooltip("Reveal in Finder")
+                            .tooltip(if is_photos { "Reveal in Photos (⌘↵)" } else { "Reveal in Finder (⌘↵)" })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let _ = reveal_path(&path_reveal);
-                                this.status = "Showing in Finder.".into();
+                                this.status = if is_photos { "Showing in Photos.".into() } else { "Showing in Finder.".into() };
                                 cx.notify();
-                            })),
-                    ),
+                            }))
+                    }),
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.select(index, window, cx);
@@ -4306,18 +4331,19 @@ impl PhotoApp {
                                 cx.notify();
                             })),
                     )
-                    .child(
+                    .child({
+                        let is_photos = crate::photokit::is_photos_catalog_image(&path_reveal);
                         MacButton::new(SharedString::from(format!("tile-reveal-{index}")))
                             .small()
                             .borderless()
                             .icon(IconName::Folder)
-                            .tooltip("Reveal in Finder")
+                            .tooltip(if is_photos { "Reveal in Photos (⌘↵)" } else { "Reveal in Finder (⌘↵)" })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let _ = reveal_path(&path_reveal);
-                                this.status = "Showing in Finder.".into();
+                                this.status = if is_photos { "Showing in Photos.".into() } else { "Showing in Finder.".into() };
                                 cx.notify();
-                            })),
-                    ),
+                            }))
+                    }),
             );
         }
 
@@ -4923,6 +4949,31 @@ impl PhotoApp {
 
         let status_tag = if underway {
             MacBadge::new(SharedString::from(format!("tag-{index}")), "indexing").warning()
+        } else if crate::photokit::is_photos_catalog(&path) {
+            match &row.index {
+                IndexState::Ready { photos, .. } => {
+                    MacBadge::new(SharedString::from(format!("tag-{index}")), format!("{photos} photos")).neutral()
+                }
+                IndexState::NoIndex => {
+                    let auth = crate::photokit::authorization_status();
+                    match auth {
+                        crate::photokit::PhotoAuthStatus::Authorized => {
+                            MacBadge::new(SharedString::from(format!("tag-{index}")), "ready").neutral()
+                        }
+                        crate::photokit::PhotoAuthStatus::Limited => {
+                            MacBadge::new(SharedString::from(format!("tag-{index}")), "selected").neutral()
+                        }
+                        crate::photokit::PhotoAuthStatus::Denied | crate::photokit::PhotoAuthStatus::Restricted => {
+                            MacBadge::new(SharedString::from(format!("tag-{index}")), "no permission").danger()
+                        }
+                        crate::photokit::PhotoAuthStatus::NotDetermined => {
+                            MacBadge::new(SharedString::from(format!("tag-{index}")), "permission needed").neutral()
+                        }
+                    }
+                }
+                IndexState::NotConnected => MacBadge::new(SharedString::from(format!("tag-{index}")), "unplugged").neutral(),
+                IndexState::Unreadable(_) => MacBadge::new(SharedString::from(format!("tag-{index}")), "unreadable").danger(),
+            }
         } else {
             match &row.index {
                 IndexState::Ready { photos, .. } => {
@@ -5048,7 +5099,7 @@ impl PhotoApp {
                                 this.pick_folder_on_disk(disk_folder_path.clone(), cx);
                             }))
                     }))
-                    .children((!is_external && connected).then(|| {
+                    .children((!is_external && connected && !crate::photokit::is_photos_catalog(&path)).then(|| {
                         MacButton::new(SharedString::from(format!("reveal-f-{index}")))
                             .small()
                             .borderless()
@@ -5057,6 +5108,18 @@ impl PhotoApp {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let _ = reveal_path(&reveal_path_val);
                                 this.status = "Showing in Finder.".into();
+                                cx.notify();
+                            }))
+                    }))
+                    .children((crate::photokit::is_photos_catalog(&path) && connected).then(|| {
+                        MacButton::new(SharedString::from(format!("open-photos-{index}")))
+                            .small()
+                            .borderless()
+                            .icon(IconName::Folder)
+                            .tooltip("Open Photos App")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let _ = open_url("photos://");
+                                this.status = "Opening Photos app.".into();
                                 cx.notify();
                             }))
                     }))
@@ -5161,6 +5224,9 @@ fn shortcut_label(settings: &GuiSettings) -> String {
 }
 
 fn folder_title(row: &FolderRow) -> String {
+    if crate::photokit::is_photos_catalog(&row.path) {
+        return "Apple Photos".to_string();
+    }
     if row.kind == DiskKind::External {
         return row.label.clone();
     }
@@ -5172,6 +5238,30 @@ fn folder_title(row: &FolderRow) -> String {
 }
 
 fn folder_hint(row: &FolderRow) -> String {
+    if crate::photokit::is_photos_catalog(&row.path) {
+        return match &row.index {
+            IndexState::Ready { .. } => "Search includes your Apple Photos library. Preserves edits and albums.".into(),
+            IndexState::NoIndex => {
+                let auth = crate::photokit::authorization_status();
+                match auth {
+                    crate::photokit::PhotoAuthStatus::Authorized => {
+                        "Ready to index your Photos library via PhotoKit. Preserves edits.".into()
+                    }
+                    crate::photokit::PhotoAuthStatus::Limited => {
+                        "Ready to index selected photos you authorized.".into()
+                    }
+                    crate::photokit::PhotoAuthStatus::Denied | crate::photokit::PhotoAuthStatus::Restricted => {
+                        "Photos access is denied. Enable access in System Settings > Privacy & Security > Photos.".into()
+                    }
+                    crate::photokit::PhotoAuthStatus::NotDetermined => {
+                        "Index your macOS Photos library. First index asks for Photos access.".into()
+                    }
+                }
+            }
+            IndexState::Unreadable(err) => format!("Could not read Photos index: {err}"),
+            _ => "Apple Photos library on this Mac.".into(),
+        };
+    }
     let line = match &row.index {
         IndexState::Ready { .. } if row.kind == DiskKind::External => "Search includes this disk.",
         IndexState::Ready { .. } if row.remembered => "Search includes this folder.",
@@ -5212,6 +5302,9 @@ fn pictures_holds_photos_app(path: &std::path::Path) -> bool {
 }
 
 fn short_path(path: &std::path::Path) -> String {
+    if crate::photokit::is_photos_catalog(path) {
+        return "System Photos Library".into();
+    }
     if let Some(home) = std::env::var_os("HOME") {
         if let Ok(rest) = path.strip_prefix(home) {
             let rest = rest.display().to_string();
