@@ -76,6 +76,7 @@ actions!(
         OpenSettings,
         NextTrack,
         PrevTrack,
+        FindSimilar,
     ]
 );
 
@@ -228,6 +229,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-left", PrevTrack, Some(SEARCH)),
         KeyBinding::new("j", NextTrack, Some(RESULTS)),
         KeyBinding::new("k", PrevTrack, Some(RESULTS)),
+        KeyBinding::new("secondary-s", FindSimilar, Some(RESULTS)),
+        KeyBinding::new("secondary-s", FindSimilar, Some(SEARCH)),
     ]);
 }
 
@@ -329,6 +332,7 @@ struct PhotoApp {
     file_meta_cache: std::sync::Mutex<HashMap<PathBuf, (String, Option<String>)>>,
     file_mtime_cache: std::sync::Mutex<HashMap<PathBuf, Option<std::time::SystemTime>>>,
     hardware: crate::hardware::HardwareProfile,
+    similar_target: Option<PathBuf>,
 }
 
 impl PhotoApp {
@@ -519,6 +523,7 @@ impl PhotoApp {
             file_meta_cache: std::sync::Mutex::new(HashMap::new()),
             file_mtime_cache: std::sync::Mutex::new(HashMap::new()),
             hardware: crate::hardware::HardwareProfile::detect(),
+            similar_target: None,
         };
         if due {
             app.spawn_update(cx);
@@ -617,6 +622,7 @@ impl PhotoApp {
         let query = self.query.trim().to_string();
         if query.is_empty() {
             self.search_task = None;
+            self.similar_target = None;
             self.raw_hits.clear();
             self.hits.clear();
             self.notes.clear();
@@ -629,8 +635,42 @@ impl PhotoApp {
             cx.notify();
             return;
         }
-        self.status = "Searching…".into();
+
+        let is_similar = query.starts_with("similar:") || query.starts_with("like:");
+        let similar_target = if is_similar {
+            if let Some(target) = self.similar_target.clone() {
+                Some(target)
+            } else {
+                let stripped = query
+                    .trim_start_matches("similar:")
+                    .trim_start_matches("like:")
+                    .trim();
+                let path = PathBuf::from(stripped);
+                if path.exists() {
+                    Some(path)
+                } else {
+                    None
+                }
+            }
+        } else {
+            self.similar_target = None;
+            None
+        };
+        self.similar_target = similar_target.clone();
+
+        let target_filename = similar_target.as_ref().map(|p| {
+            p.file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| "photo".to_string())
+        });
+
+        self.status = if let Some(ref name) = target_filename {
+            format!("Finding photos similar to {name}…").into()
+        } else {
+            "Searching…".into()
+        };
         cx.notify();
+
         let embedder = Arc::clone(&self.embedder);
         self.search_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -643,7 +683,13 @@ impl PhotoApp {
                 return;
             }
             let outcome = cx
-                .background_spawn(async move { search_photos(embedder.as_ref(), &query, SEARCH_LIMIT) })
+                .background_spawn(async move {
+                    if let Some(ref target_path) = similar_target {
+                        app_model::search_similar_to_path(embedder.as_ref(), target_path, SEARCH_LIMIT)
+                    } else {
+                        search_photos(embedder.as_ref(), &query, SEARCH_LIMIT)
+                    }
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 if view.generation != generation {
@@ -658,7 +704,19 @@ impl PhotoApp {
                         view.notes = outcome.notes;
                         view.errors = outcome.errors;
                         view.retain_thumbs();
-                        view.status = search_status(&view.hits, &view.notes, &view.index_line);
+                        if let Some(ref name) = target_filename {
+                            view.status = if view.hits.is_empty() {
+                                format!("No similar photos found for {name}.").into()
+                            } else {
+                                format!(
+                                    "Found {} similar {} for {name}.",
+                                    view.hits.len(),
+                                    if view.hits.len() == 1 { "item" } else { "items" }
+                                ).into()
+                            };
+                        } else {
+                            view.status = search_status(&view.hits, &view.notes, &view.index_line);
+                        }
                     }
                     Err(err) => {
                         view.raw_hits.clear();
@@ -1948,6 +2006,26 @@ impl PhotoApp {
         cx.notify();
     }
 
+    fn find_similar_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(hit) = self.hits.get(self.selected).cloned() {
+            self.find_similar_to_path(hit.path, window, cx);
+        }
+    }
+
+    fn find_similar_to_path(&mut self, target_path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let filename = target_path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "photo".to_string());
+        self.similar_target = Some(target_path);
+        let query_str = format!("similar:{filename}");
+        self.apply_query(&query_str, window, cx);
+    }
+
+    fn on_find_similar(&mut self, _: &FindSimilar, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_similar_selected(window, cx);
+    }
+
     fn apply_query(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = text.to_string();
         self.query = text.clone();
@@ -1959,6 +2037,7 @@ impl PhotoApp {
 
     fn clear_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.query.clear();
+        self.similar_target = None;
         self.query_input.update(cx, |state, cx| {
             state.replace_all(String::new(), window, cx);
         });
@@ -2111,6 +2190,14 @@ impl PhotoApp {
                                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(path_str.clone()));
                                     this.status = format!("Copied path: {}", path_str).into();
                                     cx.notify();
+                                })),
+                        )
+                        .item(
+                            MacMenuItem::new("action-similar", "Find Similar Photos")
+                                .icon(IconName::Sparkles)
+                                .shortcut("⌘S")
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.find_similar_selected(window, cx);
                                 })),
                         );
                 }
@@ -2702,7 +2789,7 @@ impl PhotoApp {
                 .child(self.first_launch_view(work_h, cx));
         }
 
-        let search_bar = h_flex()
+        let mut search_bar = h_flex()
             .id("search-bar")
             .w_full()
             .h(px(SEARCH_BAR_HEIGHT))
@@ -2712,6 +2799,7 @@ impl PhotoApp {
             .border_color(border)
             .bg(cx.theme().background)
             .items_center()
+            .gap_2()
             .child(
                 div()
                     .flex_1()
@@ -2720,6 +2808,28 @@ impl PhotoApp {
                             .shortcut_hint("⌘F"),
                     ),
             );
+
+        if let Some(target) = &self.similar_target {
+            let filename = target
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| "photo".to_string());
+            search_bar = search_bar.child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(MacBadge::new("similar-mode-badge", format!("Similar: {filename}")).accent())
+                    .child(
+                        MacButton::new("clear-similar-btn")
+                            .small()
+                            .icon(IconName::X)
+                            .tooltip("Clear visual similarity search")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.clear_query(window, cx);
+                            })),
+                    ),
+            );
+        }
 
         let list_content: AnyElement = if is_empty_query && !has_hits {
             self.welcome_view(work_h, window, cx).into_any_element()
@@ -2801,8 +2911,7 @@ impl PhotoApp {
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_next_track))
             .on_action(cx.listener(Self::on_prev_track))
-            .on_action(cx.listener(Self::on_next_track))
-            .on_action(cx.listener(Self::on_prev_track))
+            .on_action(cx.listener(Self::on_find_similar))
             .w_full()
             .h_full()
             .relative()
@@ -3483,6 +3592,17 @@ impl PhotoApp {
                             })),
                     )
                     .child({
+                        let hit_similar = hit.path.clone();
+                        MacButton::new("side-similar")
+                            .small()
+                            .icon(IconName::Sparkles)
+                            .label("Similar")
+                            .tooltip("Find similar photos (⌘S)")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.find_similar_to_path(hit_similar.clone(), window, cx);
+                            }))
+                    })
+                    .child({
                         let hit_path_action = hit.path.clone();
                         let hit_path_copy = hit.path.clone();
                         let hit_reveal_action = hit.path.clone();
@@ -3513,8 +3633,8 @@ impl PhotoApp {
                                     .shortcut("↵")
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         this.status = match open_path(&hit_path_action) {
-                                            Ok(()) => format!("Opened {}", hit_path_action.display()).into(),
-                                            Err(err) => err.to_string().into(),
+                                             Ok(()) => format!("Opened {}", hit_path_action.display()).into(),
+                                             Err(err) => err.to_string().into(),
                                         };
                                         cx.notify();
                                     })),
@@ -3549,6 +3669,15 @@ impl PhotoApp {
                                         cx.notify();
                                     })),
                             )
+                            .item({
+                                let hit_similar = hit.path.clone();
+                                MacMenuItem::new("side-act-similar", "Find Similar Photos")
+                                    .icon(IconName::Sparkles)
+                                    .shortcut("⌘S")
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        this.find_similar_to_path(hit_similar.clone(), window, cx);
+                                    }))
+                            })
                     }),
             );
 
@@ -4981,6 +5110,7 @@ impl Render for PhotoApp {
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_next_track))
             .on_action(cx.listener(Self::on_prev_track))
+            .on_action(cx.listener(Self::on_find_similar))
             .w(viewport.width)
             .h(viewport.height)
             .bg(if cx.theme().mode.is_dark() {
@@ -5193,6 +5323,14 @@ fn search_hint(
                             .child("track"),
                     )
                 })
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(key_chip(&FindSimilar, SEARCH, "secondary-s", window))
+                        .child("similar"),
+                )
                 .child(
                     div()
                         .flex()
@@ -5581,5 +5719,23 @@ mod tests {
                     .control(MacBadge::new("rec-badge", "Optimal").success()),
             );
         let _ = group;
+    }
+
+    #[core::prelude::v1::test]
+    fn test_similar_search_controls_construction() {
+        let action_btn = MacPullDownButton::new("toolbar-actions", "Action")
+            .icon(IconName::Sparkles)
+            .item(MacMenuItem::new("action-similar", "Find Similar Photos").icon(IconName::Sparkles).shortcut("⌘S"));
+        let _ = action_btn;
+
+        let side_btn = MacButton::new("side-similar")
+            .small()
+            .icon(IconName::Sparkles)
+            .label("Similar")
+            .tooltip("Find similar photos (⌘S)");
+        let _ = side_btn;
+
+        let badge = MacBadge::new("similar-mode-badge", "Similar: beach.jpg").accent();
+        let _ = badge;
     }
 }
